@@ -19,4 +19,4 @@ pub use resampler::{pcm_i16_le_to_f32, AudioResampler, TARGET_SAMPLE_RATE};
 pub use ring_buffer::AudioRingBuffer;
 #[cfg(feature = "vad-silero")]
 pub use vad::SileroVad;
-pub use vad::{EnergyVad, GateConfig, SpeechGate, SpeechProbe, VadEvent};
+pub use vad::{EnergyVad, GateConfig, GatedProbe, SpeechGate, SpeechProbe, VadEvent};

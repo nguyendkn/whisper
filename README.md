@@ -53,6 +53,10 @@ cargo run --release -p cli -- --file mau.wav --model models/ggml-tiny.en.bin --l
 
 # Server
 cargo run --release -p server
+
+# CLI: model lớn chốt câu + model nhỏ cho partial (xem mục RealtimeSTT bên dưới)
+cargo run --release -p cli -- --file mau.mp3 --language vi \
+    --model models/ggml-large-v3-turbo.bin --partial-model models/ggml-base.bin
 ```
 
 Config: `config/default.toml`. Override bằng env (`WHISPER_RT__MODEL__PATH=...`,
@@ -181,6 +185,55 @@ dữ liệu train (kiểu lời chào kênh YouTube). Đo trên mẫu 128 s bằ
 - Mặc định đang bật: **loại utterance trùng y nguyên lượt trước** — ảo giác kiểu này
   lặp lại cùng một câu, trong khi hai lượt nói thật liền nhau giống hệt nhau gần như
   không xảy ra. Trên mẫu trên, cách này bỏ được lần lặp thứ hai mà không cần ngưỡng.
+
+## Kỹ thuật tham chiếu từ RealtimeSTT
+
+[RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) là một engine streaming STT bằng
+Python đã chạy thực tế; bốn kỹ thuật của nó đã được cài lại (bằng Rust, theo kiến trúc
+ở đây) sau khi đối chiếu với số đo của chính dự án này:
+
+| Kỹ thuật | Ở RealtimeSTT | Ở đây |
+|---|---|---|
+| Model riêng cho partial | `realtime_model_type`, `beam_size_realtime` | `[partial_model]` / `--partial-model`, `SessionEngines` |
+| VAD hai tầng | WebRTC làm cổng, Silero xác nhận | `GatedProbe`: cổng năng lượng + Silero, `vad.energy_gate_threshold` |
+| Pre-roll dài | `pre_recording_buffer_duration = 1.0` | `session.pre_roll_secs` nâng 0,4 → 1,0 |
+| Chặn độ trễ tích luỹ | `allowed_latency_limit` (100 chunk) | `session.max_probe_backlog_secs = 2.0` |
+
+Vì sao **model riêng cho partial** là thứ đáng làm nhất: theo bảng đo ở trên, turbo cần
+~2 s cho một cửa sổ partial 6 s, tức RTF ~1 chỉ riêng cho partial — chạy full 128 s audio
+ở nhịp thời gian thực bị tụt lại 26 s. Ghép `large-v3-turbo` (final) với `base` (partial)
+giữ nguyên chất lượng câu chốt mà partial về mức ~250 ms.
+
+### Đo dual-model trên full file 128 s (nhịp thời gian thực)
+
+| Cấu hình | wall | partial | median RTF partial | final | RSS |
+|---|---|---|---|---|---|
+| turbo 12 thread (một model) | 150,9 s | 52 lượt | 0,31 (~1,9 s) | 5 | 2,02 GB |
+| turbo 10 thread + base 4 thread | **147,2 s** | **127 lượt** | **0,05 (~0,3 s)** | 5 | 2,23 GB |
+| turbo 12 + base 12, hạn mức riêng | 221,4 s | 29 lượt | 0,04 nhưng max 17,0 | 5 | 2,23 GB |
+
+Dòng thứ ba là bản sai (mỗi scheduler một semaphore) — xem ngay dưới. Dòng thứ hai là
+bản đúng: text sống mượt hơn **2,4×** (127 so với 52 lượt cập nhật), độ trễ partial
+giảm **6×**, chất lượng câu chốt không đổi vì final vẫn là turbo, đổi lại 210 MB RAM
+cho model thứ hai. Có model partial nhanh rồi thì hạ `session.partial_interval_ms`
+xuống 250 (RealtimeSTT để 200 ms) để text cập nhật dày hơn nữa.
+
+### Cái bẫy khi ghép hai model: hạn mức thread phải dùng chung
+
+Lần đo đầu tiên với dual-model **chậm hơn** turbo-only (221 s so với 158 s cho 128 s
+audio): mỗi scheduler có semaphore riêng, nên turbo 12 thread và base 12 thread chạy
+đồng thời thành 24 thread trên 16 core — đúng cái sập oversubscription đã đo ở mục
+trên. Vì thế `InferenceScheduler` giờ nhận một [`ThreadBudget`] dùng chung ở cấp tiến
+trình: mỗi lượt inference xin đúng `n_threads` permit, nên bất biến
+`tổng thread đang chạy ≤ cpu_thread_budget` được giữ kể cả khi có nhiều model.
+
+Chia thread cho dual-model: muốn partial chạy **chồng** được với final thì tổng phải
+nằm trong hạn mức — máy 16 core (hạn mức 14) thì final 10 thread + partial 4 thread.
+Nếu tổng vượt hạn mức, partial phải chờ final xong: vẫn đúng, nhưng mất hết cái lợi.
+
+Hai thứ **không** lấy: `early_transcription_on_silence` (chạy final sớm một cách suy đoán
+rồi bỏ nếu người nói tiếp) — trên CPU vốn đã bão hoà thì nhân đôi công việc mỗi lượt nói
+là lỗ; và wake word — ngoài phạm vi một server ASR.
 
 ## Test
 

@@ -4,11 +4,13 @@
 
 mod energy;
 mod gate;
+mod gated;
 #[cfg(feature = "vad-silero")]
 mod silero;
 
 pub use energy::EnergyVad;
 pub use gate::{GateConfig, SpeechGate, VadEvent};
+pub use gated::GatedProbe;
 #[cfg(feature = "vad-silero")]
 pub use silero::SileroVad;
 
@@ -32,5 +34,19 @@ pub trait SpeechProbe: Send {
     /// Độ dài một frame theo ms — dùng để quy đổi ngưỡng im lặng sang số frame.
     fn frame_ms(&self) -> u32 {
         (self.frame_samples() as u64 * 1_000 / super::TARGET_SAMPLE_RATE as u64) as u32
+    }
+}
+
+impl SpeechProbe for Box<dyn SpeechProbe> {
+    fn frame_samples(&self) -> usize {
+        (**self).frame_samples()
+    }
+
+    fn probabilities(&mut self, pcm: &[f32]) -> Result<Vec<f32>, AudioError> {
+        (**self).probabilities(pcm)
+    }
+
+    fn frame_ms(&self) -> u32 {
+        (**self).frame_ms()
     }
 }

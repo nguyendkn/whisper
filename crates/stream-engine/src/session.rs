@@ -15,6 +15,36 @@ use crate::{
     transcript::Transcript,
 };
 
+/// Model dùng cho một session.
+///
+/// Cho phép **hai model khác nhau**: một model nhỏ/nhanh cho partial và model lớn
+/// cho final — cách RealtimeSTT gọi là `realtime_model_type`. Đây là cách duy nhất
+/// để dùng `large-v3-turbo` mà partial vẫn dưới 300 ms: đo trên CPU 16 core, turbo
+/// cần ~2 s cho cửa sổ partial 6 s, còn `base` chỉ ~250 ms.
+#[derive(Clone)]
+pub struct SessionEngines {
+    /// Model chốt câu — chất lượng quyết định ở đây.
+    pub finals: Arc<InferenceScheduler>,
+    /// Model chạy partial. `None` = dùng luôn model final.
+    pub partials: Option<Arc<InferenceScheduler>>,
+}
+
+impl SessionEngines {
+    pub fn single(scheduler: Arc<InferenceScheduler>) -> Self {
+        Self {
+            finals: scheduler,
+            partials: None,
+        }
+    }
+
+    fn for_mode(&self, mode: DecodeMode) -> &Arc<InferenceScheduler> {
+        match mode {
+            DecodeMode::Partial => self.partials.as_ref().unwrap_or(&self.finals),
+            DecodeMode::Final => &self.finals,
+        }
+    }
+}
+
 /// Một phiên transcribe realtime (một kết nối WebSocket, hoặc một lần chạy CLI).
 ///
 /// Không sở hữu model: mọi lượt inference đi qua [`InferenceScheduler`] để cả
@@ -22,13 +52,14 @@ use crate::{
 pub struct Session {
     id: Uuid,
     config: SessionConfig,
-    scheduler: Arc<InferenceScheduler>,
+    engines: SessionEngines,
     events: mpsc::Sender<StreamEvent>,
     buffer: AudioRingBuffer,
     gate: SpeechGate,
     probe: Box<dyn SpeechProbe>,
     probe_pending: Vec<f32>,
     probe_chunk_samples: usize,
+    max_probe_backlog: usize,
     transcript: Arc<Mutex<Transcript>>,
     partial_inflight: Arc<AtomicBool>,
     last_partial_at: Instant,
@@ -37,7 +68,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(
-        scheduler: Arc<InferenceScheduler>,
+        engines: SessionEngines,
         probe: Box<dyn SpeechProbe>,
         events: mpsc::Sender<StreamEvent>,
         config: SessionConfig,
@@ -50,8 +81,9 @@ impl Session {
             id: Uuid::new_v4(),
             gate: SpeechGate::new(config.gate, frame_ms),
             buffer: AudioRingBuffer::new(TARGET_SAMPLE_RATE, config.max_utterance_secs),
+            max_probe_backlog: (TARGET_SAMPLE_RATE as f32 * config.max_probe_backlog_secs) as usize,
             config,
-            scheduler,
+            engines,
             events,
             probe,
             probe_pending: Vec::with_capacity(probe_chunk_samples * 2),
@@ -83,6 +115,18 @@ impl Session {
         }
         self.buffer.push(pcm);
         self.probe_pending.extend_from_slice(pcm);
+
+        // VAD không theo kịp: bỏ phần chờ cũ nhất. Audio vẫn nằm trong ring buffer
+        // nên nội dung không mất, chỉ mất độ chính xác của mốc cắt câu.
+        if self.probe_pending.len() > self.max_probe_backlog {
+            let drop_len = self.probe_pending.len() - self.max_probe_backlog;
+            self.probe_pending.drain(..drop_len);
+            tracing::warn!(
+                session_id = %self.id,
+                dropped_samples = drop_len,
+                "VAD chậm hơn luồng audio vào, bỏ phần chờ cũ nhất"
+            );
+        }
 
         while self.probe_pending.len() >= self.probe_chunk_samples {
             let chunk: Vec<f32> = self
@@ -155,7 +199,7 @@ impl Session {
     }
 
     fn spawn_decode(&self, pcm: Vec<f32>, mode: DecodeMode, utterance: u64) {
-        let scheduler = Arc::clone(&self.scheduler);
+        let scheduler = Arc::clone(self.engines.for_mode(mode));
         let events = self.events.clone();
         let transcript = Arc::clone(&self.transcript);
         let inflight = Arc::clone(&self.partial_inflight);

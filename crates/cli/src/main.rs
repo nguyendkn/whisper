@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use audio_pipeline::{EnergyVad, GateConfig, SpeechProbe};
+use audio_pipeline::{EnergyVad, GateConfig, GatedProbe, SpeechProbe};
 use clap::Parser;
-use stream_engine::{InferenceScheduler, Session, SessionConfig, StreamEvent};
+use stream_engine::{
+    InferenceScheduler, Session, SessionConfig, SessionEngines, StreamEvent, ThreadBudget,
+};
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 use whisper_core::{WhisperConfig, WhisperModel};
@@ -21,6 +23,20 @@ struct Args {
     /// Model Silero VAD của whisper.cpp. Không có thì dùng energy VAD.
     #[arg(long)]
     vad_model: Option<PathBuf>,
+    /// Model nhỏ chạy partial (ví dụ base) trong khi --model lo lượt chốt câu.
+    /// Đây là cách dùng large-v3-turbo mà partial vẫn dưới 300 ms.
+    #[arg(long)]
+    partial_model: Option<PathBuf>,
+    /// Số thread cho model partial. Mặc định 4 — model partial không nên chiếm hết
+    /// hạn mức thread của model chính.
+    #[arg(long, default_value_t = 4)]
+    partial_threads: i32,
+    /// Tổng thread CPU cho mọi inference. 0 = tự lấy số core - 2.
+    #[arg(long, default_value_t = 0)]
+    cpu_budget: usize,
+    /// Ngưỡng cổng năng lượng đứng trước Silero VAD (0 = tắt cổng).
+    #[arg(long, default_value_t = 0.15)]
+    vad_gate: f32,
     /// Mã ngôn ngữ; bỏ trống để auto-detect.
     #[arg(long, default_value = "vi")]
     language: String,
@@ -80,7 +96,41 @@ async fn main() -> anyhow::Result<()> {
         min_confidence: args.min_confidence,
         ..WhisperConfig::default()
     })?);
-    let scheduler = Arc::new(InferenceScheduler::new(model, args.concurrency));
+    let budget = if args.cpu_budget > 0 {
+        ThreadBudget::new(args.cpu_budget)
+    } else {
+        ThreadBudget::auto()
+    };
+    let scheduler = Arc::new(InferenceScheduler::with_budget(
+        model,
+        Arc::clone(&budget),
+        args.concurrency,
+    ));
+
+    let partial_scheduler = match args.partial_model.as_ref() {
+        Some(path) => {
+            let partial = Arc::new(WhisperModel::load(WhisperConfig {
+                model_path: path.clone(),
+                language: (!args.language.trim().is_empty()).then(|| args.language.clone()),
+                n_threads: args.partial_threads,
+                use_gpu: args.use_gpu,
+                state_pool_size: 1,
+                scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
+                min_confidence: args.min_confidence,
+                ..WhisperConfig::default()
+            })?);
+            Some(Arc::new(InferenceScheduler::with_budget(
+                partial,
+                Arc::clone(&budget),
+                1,
+            )))
+        }
+        None => None,
+    };
+    let engines = SessionEngines {
+        finals: Arc::clone(&scheduler),
+        partials: partial_scheduler,
+    };
 
     if args.bench {
         let path = args
@@ -112,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(64);
     let mut session = Session::new(
-        scheduler,
+        engines,
         build_probe(&args)?,
         event_tx,
         SessionConfig {
@@ -158,11 +208,16 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(feature = "vad-silero")]
 fn build_probe(args: &Args) -> anyhow::Result<Box<dyn SpeechProbe>> {
     match args.vad_model.as_deref() {
-        Some(path) => Ok(Box::new(audio_pipeline::SileroVad::load(
-            path,
-            args.threads.min(2),
-            args.use_gpu,
-        )?)),
+        Some(path) => {
+            let silero: Box<dyn SpeechProbe> = Box::new(audio_pipeline::SileroVad::load(
+                path,
+                args.threads.min(2),
+                args.use_gpu,
+            )?);
+            // Cổng năng lượng đứng trước Silero: khoảng lặng không phải trả tiền
+            // cho một lượt inference VAD.
+            Ok(Box::new(GatedProbe::new(silero, args.vad_gate)))
+        }
         None => Ok(Box::new(EnergyVad::default())),
     }
 }

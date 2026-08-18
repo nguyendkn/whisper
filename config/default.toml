@@ -12,6 +12,11 @@ bind_addr = "0.0.0.0:8080"
 # hoặc dùng base/small rồi chia thành nhiều stream ít thread (4 thread x 3 stream
 # cho throughput cao hơn 33%).
 max_concurrent_inference = 1
+# Tổng thread CPU cho MỌI model trong tiến trình (model chính + model partial dùng
+# chung hạn mức này). 0 = tự lấy số core - 2.
+# Bắt buộc phải dùng chung: đo được turbo 12 thread + base 12 thread chạy song song
+# làm cả file 128 s tụt lại 93 s so với realtime — tệ hơn cả khi chỉ dùng turbo.
+cpu_thread_budget = 0
 
 [model]
 path = "models/ggml-large-v3-turbo.bin"
@@ -37,6 +42,22 @@ scale_partial_audio_ctx = true
 # hạ ngưỡng nếu vẫn thấy ảo giác, nâng lên nếu bị rơi câu nói thật rất ngắn.
 no_speech_thold = 0.6
 
+# Model nhỏ chạy partial, model chính ở trên lo lượt chốt câu. Bỏ trống section này
+# thì partial dùng luôn model chính. Đây là cách duy nhất để dùng large-v3-turbo mà
+# partial vẫn nhanh: turbo cần ~2 s cho cửa sổ partial 6 s, base chỉ ~250 ms.
+# Lưu ý chia thread: hai model dùng chung cpu_thread_budget, nên muốn partial chạy
+# CHỒNG được với final thì tổng thread phải nằm trong hạn mức (ví dụ máy 16 core:
+# hạn mức 14 = final 10 thread + partial 4 thread). Nếu tổng vượt hạn mức thì partial
+# phải chờ final xong — vẫn đúng, nhưng mất hết cái lợi về độ trễ.
+# [partial_model]
+# path = "models/ggml-base.bin"
+# language = "vi"
+# n_threads = 4
+# use_gpu = false
+# min_audio_ms = 1000
+# Khi đã có model partial nhanh thì hạ partial_interval_ms xuống 250 để text mượt hơn.
+# max_concurrent_partial_inference = 1
+
 [vad]
 # Rỗng = energy VAD (chỉ nên dùng khi dev; nhạc/tiếng ồn sẽ bị tính là giọng nói).
 model_path = "models/ggml-silero-v5.1.2.bin"
@@ -47,6 +68,10 @@ silence_ms_for_end = 800
 min_speech_ms = 128
 n_threads = 2
 use_gpu = false
+# Cổng năng lượng đứng trước Silero: dưới ngưỡng này không chạy model VAD (tiết kiệm
+# ~7-8 ms mỗi 256 ms audio mỗi session trên khoảng lặng). 0 = tắt. Phải nhỏ hơn
+# threshold ở trên để không bao giờ chặn mất tiếng nói thật.
+energy_gate_threshold = 0.15
 
 [session]
 # Chốt cưỡng bức nếu một lượt nói dài quá mức (giây).
@@ -54,4 +79,8 @@ max_utterance_secs = 25.0
 # Partial chỉ decode đuôi này, không decode lại cả lượt nói.
 partial_window_secs = 6.0
 partial_interval_ms = 800
-pre_roll_secs = 0.4
+# Giữ 1 s audio trước khi VAD báo có tiếng: VAD trễ vài chục ms và ta chấm điểm theo
+# cụm 256 ms, để 0,3-0,4 s là hay cắt mất từ đầu câu.
+pre_roll_secs = 1.0
+# VAD không theo kịp luồng vào thì bỏ phần chờ cũ nhất thay vì để độ trễ phình.
+max_probe_backlog_secs = 2.0

@@ -70,7 +70,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: StreamParams)
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(64);
     let mut session = Session::new(
-        state.scheduler.clone(),
+        state.engines(),
         state.new_probe(),
         event_tx,
         state.cfg.session_config(),

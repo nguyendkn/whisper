@@ -8,10 +8,20 @@ use whisper_core::WhisperConfig;
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
     pub bind_addr: String,
-    /// Số inference song song trên toàn server. Trên NUC để 1–2; trên GPU lớn
-    /// tăng dần rồi đo RTF thay vì đoán.
+    /// Kích thước pool `WhisperState` của model chính. Số lượt chạy song song thực
+    /// tế do `cpu_thread_budget` quyết định, không phải trường này.
     pub max_concurrent_inference: usize,
+    /// Tổng số thread CPU cho toàn bộ inference trong tiến trình (mọi model dùng
+    /// chung). 0 = tự lấy `số core - 2`.
+    #[serde(default)]
+    pub cpu_thread_budget: usize,
     pub model: ModelSettings,
+    /// Model nhỏ chạy partial. Bỏ trống = dùng luôn model chính.
+    #[serde(default)]
+    pub partial_model: Option<ModelSettings>,
+    /// Hạn mức song song riêng cho model partial.
+    #[serde(default = "default_partial_concurrency")]
+    pub max_concurrent_partial_inference: usize,
     pub vad: VadSettings,
     pub session: SessionSettings,
 }
@@ -57,6 +67,10 @@ pub struct VadSettings {
     pub n_threads: i32,
     #[serde(default)]
     pub use_gpu: bool,
+    /// Cổng năng lượng đứng trước Silero: dưới ngưỡng này thì không chạy model VAD.
+    /// 0 = tắt cổng. Phải thấp hơn `threshold` để không chặn mất tiếng nói thật.
+    #[serde(default = "default_energy_gate")]
+    pub energy_gate_threshold: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +79,8 @@ pub struct SessionSettings {
     pub partial_window_secs: f32,
     pub partial_interval_ms: u64,
     pub pre_roll_secs: f32,
+    #[serde(default = "default_probe_backlog")]
+    pub max_probe_backlog_secs: f32,
 }
 
 impl ServerConfig {
@@ -104,12 +120,36 @@ impl ServerConfig {
         }
     }
 
+    /// Config cho model partial, nếu có khai báo riêng.
+    pub fn partial_whisper_config(&self) -> Option<WhisperConfig> {
+        let model = self.partial_model.as_ref()?;
+        Some(WhisperConfig {
+            model_path: model.path.clone(),
+            language: opt(&model.language).or_else(|| opt(&self.model.language)),
+            n_threads: model.n_threads,
+            translate: false,
+            // Partial luôn greedy: beam search chỉ đáng cho lượt chốt câu.
+            beam_size: None,
+            temperature: 0.0,
+            use_gpu: model.use_gpu,
+            gpu_device: model.gpu_device,
+            flash_attn: model.flash_attn,
+            initial_prompt: opt(&model.initial_prompt),
+            min_audio_ms: model.min_audio_ms,
+            state_pool_size: self.max_concurrent_partial_inference.max(1),
+            scale_partial_audio_ctx: model.scale_partial_audio_ctx,
+            no_speech_thold: model.no_speech_thold,
+            min_confidence: model.min_confidence,
+        })
+    }
+
     pub fn session_config(&self) -> SessionConfig {
         SessionConfig {
             max_utterance_secs: self.session.max_utterance_secs,
             partial_window_secs: self.session.partial_window_secs,
             partial_interval_ms: self.session.partial_interval_ms,
             pre_roll_secs: self.session.pre_roll_secs,
+            max_probe_backlog_secs: self.session.max_probe_backlog_secs,
             gate: GateConfig {
                 threshold: self.vad.threshold,
                 silence_ms_for_end: self.vad.silence_ms_for_end,
@@ -121,6 +161,18 @@ impl ServerConfig {
     pub fn vad_model_path(&self) -> Option<PathBuf> {
         opt(&self.vad.model_path).map(PathBuf::from)
     }
+}
+
+fn default_partial_concurrency() -> usize {
+    1
+}
+
+fn default_probe_backlog() -> f32 {
+    2.0
+}
+
+fn default_energy_gate() -> f32 {
+    0.15
 }
 
 fn default_no_speech_thold() -> f32 {
