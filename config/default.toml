@@ -28,6 +28,10 @@ initial_prompt = ""
 # Partial chỉ chạy encoder đúng độ dài cửa sổ thay vì luôn 30 s — khoản tiết kiệm
 # lớn nhất của đường partial. Tắt nếu thấy rơi chữ ở cuối cửa sổ partial.
 scale_partial_audio_ctx = true
+# Bỏ segment mà whisper tự báo "không có tiếng nói" với xác suất cao hơn ngưỡng.
+# Trên khoảng lặng, model sinh câu học từ dữ liệu train (kiểu "hãy đăng ký kênh");
+# hạ ngưỡng nếu vẫn thấy ảo giác, nâng lên nếu bị rơi câu nói thật rất ngắn.
+no_speech_thold = 0.6
 
 [vad]
 # Rỗng = energy VAD (chỉ nên dùng khi dev; nhạc/tiếng ồn sẽ bị tính là giọng nói).

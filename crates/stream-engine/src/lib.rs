@@ -13,4 +13,4 @@ pub use error::EngineError;
 pub use event::{StreamEvent, TranscriptUpdate};
 pub use scheduler::InferenceScheduler;
 pub use session::Session;
-pub use transcript::Transcript;
+pub use transcript::{CommitOutcome, Transcript};

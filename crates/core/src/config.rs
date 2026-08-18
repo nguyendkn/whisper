@@ -24,6 +24,13 @@ pub struct WhisperConfig {
     pub initial_prompt: Option<String>,
     /// Ngưỡng độ dài tối thiểu trước khi gọi inference.
     pub min_audio_ms: u32,
+    /// Bỏ segment mà whisper tự đánh giá là "không có tiếng nói" với xác suất cao
+    /// hơn ngưỡng này. Trên đoạn gần như im lặng, whisper sinh ra câu học từ dữ
+    /// liệu train (kiểu "hãy đăng ký kênh") — đây là cách chặn rẻ nhất.
+    pub no_speech_thold: f32,
+    /// Bỏ segment có độ tự tin trung bình (xác suất token) dưới ngưỡng này.
+    /// 0.0 = tắt.
+    pub min_confidence: f32,
     /// Số `WhisperState` giữ sẵn trong pool. Nên bằng số inference song song.
     pub state_pool_size: usize,
     /// Với lượt `Partial`, thu nhỏ encoder context theo đúng độ dài audio thay vì
@@ -47,6 +54,8 @@ impl Default for WhisperConfig {
             flash_attn: false,
             initial_prompt: None,
             min_audio_ms: 1_000,
+            no_speech_thold: 0.6,
+            min_confidence: 0.0,
             state_pool_size: 2,
             scale_partial_audio_ctx: true,
         }

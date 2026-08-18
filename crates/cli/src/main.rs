@@ -45,6 +45,10 @@ struct Args {
     /// Tắt việc thu nhỏ encoder context cho partial (để so sánh khi benchmark).
     #[arg(long)]
     no_audio_ctx_scaling: bool,
+    /// Bỏ segment có độ tự tin trung bình dưới ngưỡng (0 = tắt). Đo được: câu
+    /// thật 0,93–0,98; ảo giác trên khoảng lặng 0,83–0,85.
+    #[arg(long, default_value_t = 0.0)]
+    min_confidence: f32,
 
     /// Chạy benchmark trên `--file` thay vì transcribe streaming.
     #[arg(long)]
@@ -73,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         flash_attn: args.flash_attn,
         state_pool_size: args.concurrency,
         scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
+        min_confidence: args.min_confidence,
         ..WhisperConfig::default()
     })?);
     let scheduler = Arc::new(InferenceScheduler::new(model, args.concurrency));

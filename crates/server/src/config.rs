@@ -33,6 +33,12 @@ pub struct ModelSettings {
     #[serde(default)]
     pub beam_size: i32,
     pub min_audio_ms: u32,
+    /// Bỏ segment có xác suất "không có tiếng nói" cao hơn ngưỡng (chặn ảo giác).
+    #[serde(default = "default_no_speech_thold")]
+    pub no_speech_thold: f32,
+    /// Bỏ segment có độ tự tin trung bình dưới ngưỡng (0.0 = tắt).
+    #[serde(default)]
+    pub min_confidence: f32,
     #[serde(default)]
     pub initial_prompt: String,
     /// Thu nhỏ encoder context cho lượt partial theo đúng độ dài cửa sổ.
@@ -91,6 +97,8 @@ impl ServerConfig {
             flash_attn: self.model.flash_attn,
             initial_prompt: opt(&self.model.initial_prompt),
             min_audio_ms: self.model.min_audio_ms,
+            no_speech_thold: self.model.no_speech_thold,
+            min_confidence: self.model.min_confidence,
             state_pool_size: self.max_concurrent_inference.max(1),
             scale_partial_audio_ctx: self.model.scale_partial_audio_ctx,
         }
@@ -113,6 +121,10 @@ impl ServerConfig {
     pub fn vad_model_path(&self) -> Option<PathBuf> {
         opt(&self.vad.model_path).map(PathBuf::from)
     }
+}
+
+fn default_no_speech_thold() -> f32 {
+    0.6
 }
 
 fn default_true() -> bool {

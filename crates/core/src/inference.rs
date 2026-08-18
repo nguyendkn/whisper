@@ -84,10 +84,27 @@ pub fn transcribe(
 
     let n_segments = state.full_n_segments();
     let mut segments = Vec::with_capacity(n_segments.max(0) as usize);
+    let mut dropped = 0;
     for i in 0..n_segments {
         let Some(segment) = state.get_segment(i) else {
             continue;
         };
+        // Chặn ảo giác trên khoảng lặng: whisper vẫn sinh text khi không có tiếng
+        // nói, nhưng tự báo no_speech cao — dùng luôn tín hiệu đó.
+        let no_speech = segment.no_speech_probability();
+        let confidence = mean_token_probability(&segment);
+        tracing::debug!(
+            no_speech,
+            confidence,
+            text = segment.to_str_lossy().unwrap_or_default().as_ref(),
+            "segment"
+        );
+        // Chặn ảo giác trên khoảng lặng theo hai tín hiệu độc lập: whisper tự báo
+        // no_speech, và độ tự tin trung bình của token trong segment.
+        if no_speech > config.no_speech_thold || confidence < config.min_confidence {
+            dropped += 1;
+            continue;
+        }
         segments.push(Segment {
             text: segment
                 .to_str_lossy()
@@ -111,9 +128,31 @@ pub fn transcribe(
         inference_ms,
         rtf = result.rtf(),
         n_segments,
+        dropped,
         "transcribed chunk"
     );
     Ok(result)
+}
+
+/// Xác suất trung bình của các token trong segment — ảo giác thường có độ tự tin
+/// thấp hơn rõ rệt so với câu nói thật.
+fn mean_token_probability(segment: &whisper_rs::WhisperSegment<'_>) -> f32 {
+    let n_tokens = segment.n_tokens();
+    if n_tokens <= 0 {
+        return 0.0;
+    }
+    let mut total = 0.0;
+    let mut counted = 0;
+    for i in 0..n_tokens {
+        if let Some(token) = segment.get_token(i) {
+            total += token.token_probability();
+            counted += 1;
+        }
+    }
+    if counted == 0 {
+        return 0.0;
+    }
+    total / counted as f32
 }
 
 fn build_params<'a>(
@@ -152,6 +191,7 @@ fn build_params<'a>(
     }
     params.set_suppress_blank(true);
     params.set_suppress_nst(true);
+    params.set_no_speech_thold(config.no_speech_thold);
     if let Some(language) = config.language.as_deref() {
         params.set_language(Some(language));
     } else {

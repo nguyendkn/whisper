@@ -170,12 +170,26 @@ impl Session {
             let event = match outcome {
                 Ok(result) => {
                     let text = result.text();
-                    let full_text = {
-                        let mut transcript = transcript.lock().expect("transcript poisoned");
-                        match mode {
-                            DecodeMode::Final => transcript.commit(&text),
-                            DecodeMode::Partial => transcript.with_partial(&text),
+                    let full_text = match mode {
+                        DecodeMode::Final => {
+                            let outcome = transcript
+                                .lock()
+                                .expect("transcript poisoned")
+                                .commit(&text);
+                            if !outcome.accepted {
+                                tracing::debug!(
+                                    session_id = %session_id,
+                                    utterance,
+                                    "bỏ final rỗng hoặc trùng lượt trước"
+                                );
+                                return;
+                            }
+                            outcome.full_text
                         }
+                        DecodeMode::Partial => transcript
+                            .lock()
+                            .expect("transcript poisoned")
+                            .with_partial(&text),
                     };
                     let update = TranscriptUpdate {
                         session_id,
