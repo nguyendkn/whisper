@@ -23,11 +23,11 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
-hound = "3.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"
+hound = "3.5"
 
 [features]
 default = ["vad-silero"]

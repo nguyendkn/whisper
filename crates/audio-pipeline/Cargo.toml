@@ -13,9 +13,12 @@ tracing = { workspace = true }
 rubato = "0.16"
 cpal = { version = "0.18", optional = true }
 whisper-rs = { workspace = true, optional = true }
+symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4"], optional = true }
 
 [features]
-default = ["vad-silero"]
+default = ["vad-silero", "decode"]
+# Giải mã mp3/wav/flac/ogg/m4a bằng symphonia (không cần ffmpeg).
+decode = ["dep:symphonia"]
 # Silero VAD do whisper.cpp bundle sẵn — không cần onnxruntime.
 vad-silero = ["dep:whisper-rs"]
 # Chỉ `cli` cần: kéo theo ALSA/CoreAudio, server không dùng.

@@ -19,7 +19,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-hound = "3.5"
 
 [features]
 default = ["vad-silero"]

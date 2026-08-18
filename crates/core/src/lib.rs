@@ -8,7 +8,7 @@ pub mod inference;
 pub mod model;
 pub mod state_pool;
 
-pub use config::{WhisperConfig, WHISPER_CHUNK_SECS, WHISPER_SAMPLE_RATE};
+pub use config::{WhisperConfig, WHISPER_CHUNK_SECS, WHISPER_FULL_AUDIO_CTX, WHISPER_SAMPLE_RATE};
 pub use error::AsrError;
 pub use inference::{transcribe, DecodeMode, Segment, TranscriptResult};
 pub use model::WhisperModel;

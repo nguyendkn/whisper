@@ -35,6 +35,9 @@ pub struct ModelSettings {
     pub min_audio_ms: u32,
     #[serde(default)]
     pub initial_prompt: String,
+    /// Thu nhỏ encoder context cho lượt partial theo đúng độ dài cửa sổ.
+    #[serde(default = "default_true")]
+    pub scale_partial_audio_ctx: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,6 +92,7 @@ impl ServerConfig {
             initial_prompt: opt(&self.model.initial_prompt),
             min_audio_ms: self.model.min_audio_ms,
             state_pool_size: self.max_concurrent_inference.max(1),
+            scale_partial_audio_ctx: self.model.scale_partial_audio_ctx,
         }
     }
 
@@ -109,6 +113,10 @@ impl ServerConfig {
     pub fn vad_model_path(&self) -> Option<PathBuf> {
         opt(&self.vad.model_path).map(PathBuf::from)
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn opt(value: &str) -> Option<String> {

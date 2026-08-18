@@ -9,8 +9,9 @@ use tracing_subscriber::EnvFilter;
 use whisper_core::{WhisperConfig, WhisperModel};
 
 mod audio_source;
+mod bench;
 
-/// Test local: mic hoặc file WAV -> transcript trên terminal.
+/// Test local: mic hoặc file audio -> transcript trên terminal.
 #[derive(Debug, Parser)]
 #[command(name = "whisper-rt", version)]
 struct Args {
@@ -28,7 +29,7 @@ struct Args {
     /// Số inference song song.
     #[arg(long, default_value_t = 2)]
     concurrency: usize,
-    /// Đọc từ file WAV thay vì mic.
+    /// Đọc từ file audio (mp3/wav/flac/ogg/m4a) thay vì mic.
     #[arg(long)]
     file: Option<PathBuf>,
     /// Nạp file nhanh nhất có thể thay vì mô phỏng thời gian thực.
@@ -39,6 +40,21 @@ struct Args {
     /// Cửa sổ decode cho partial (giây).
     #[arg(long, default_value_t = 6.0)]
     partial_window: f32,
+    #[arg(long)]
+    flash_attn: bool,
+    /// Tắt việc thu nhỏ encoder context cho partial (để so sánh khi benchmark).
+    #[arg(long)]
+    no_audio_ctx_scaling: bool,
+
+    /// Chạy benchmark trên `--file` thay vì transcribe streaming.
+    #[arg(long)]
+    bench: bool,
+    /// Số lượt đo mỗi phép trong benchmark.
+    #[arg(long, default_value_t = 3)]
+    repeat: usize,
+    /// Độ dài đoạn dùng làm "một lượt nói" khi benchmark (giây).
+    #[arg(long, default_value_t = 20.0)]
+    utterance_secs: f32,
 }
 
 #[tokio::main]
@@ -54,10 +70,40 @@ async fn main() -> anyhow::Result<()> {
         language: (!args.language.trim().is_empty()).then(|| args.language.clone()),
         n_threads: args.threads,
         use_gpu: args.use_gpu,
+        flash_attn: args.flash_attn,
         state_pool_size: args.concurrency,
+        scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
         ..WhisperConfig::default()
     })?);
     let scheduler = Arc::new(InferenceScheduler::new(model, args.concurrency));
+
+    if args.bench {
+        let path = args
+            .file
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--bench cần --file <audio>"))?;
+        let pcm = audio_pipeline::decode_file_to_16k_mono(&path)?;
+        let label = format!(
+            "model={} threads={} concurrency={} audio_ctx_scaling={} flash_attn={}",
+            args.model.file_name().unwrap_or_default().to_string_lossy(),
+            args.threads,
+            args.concurrency,
+            !args.no_audio_ctx_scaling,
+            args.flash_attn,
+        );
+        return bench::run(
+            scheduler,
+            &pcm,
+            &bench::BenchOptions {
+                repeats: args.repeat,
+                concurrency: args.concurrency,
+                partial_window_secs: args.partial_window,
+                utterance_secs: args.utterance_secs,
+                label,
+            },
+        )
+        .await;
+    }
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(64);
     let mut session = Session::new(

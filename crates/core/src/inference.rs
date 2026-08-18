@@ -77,7 +77,7 @@ pub fn transcribe(
         });
     }
 
-    let params = build_params(config, mode);
+    let params = build_params(config, mode, pcm.len());
     let started = Instant::now();
     state.full(params, pcm).map_err(AsrError::Inference)?;
     let inference_ms = started.elapsed().as_millis() as u64;
@@ -116,7 +116,11 @@ pub fn transcribe(
     Ok(result)
 }
 
-fn build_params<'a>(config: &'a WhisperConfig, mode: DecodeMode) -> FullParams<'a, 'a> {
+fn build_params<'a>(
+    config: &'a WhisperConfig,
+    mode: DecodeMode,
+    samples: usize,
+) -> FullParams<'a, 'a> {
     let strategy = match (mode, config.beam_size) {
         (DecodeMode::Final, Some(beam_size)) => SamplingStrategy::BeamSearch {
             beam_size,
@@ -139,6 +143,13 @@ fn build_params<'a>(config: &'a WhisperConfig, mode: DecodeMode) -> FullParams<'
     params.set_print_realtime(false);
     params.set_print_special(false);
     params.set_print_timestamps(false);
+    // Partial chỉ cần encoder chạy đúng độ dài cửa sổ; Final giữ nguyên full
+    // context để không mất chất lượng ở đoạn cuối câu.
+    if mode == DecodeMode::Partial {
+        if let Some(audio_ctx) = config.audio_ctx_for(samples) {
+            params.set_audio_ctx(audio_ctx);
+        }
+    }
     params.set_suppress_blank(true);
     params.set_suppress_nst(true);
     if let Some(language) = config.language.as_deref() {

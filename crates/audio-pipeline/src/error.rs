@@ -8,6 +8,8 @@ pub enum AudioError {
     Device(String),
     #[error("unsupported sample format: {0}")]
     UnsupportedSampleFormat(String),
+    #[error("decode error: {0}")]
+    Decode(String),
     #[error("resampler error: {0}")]
     Resample(String),
     #[error("VAD model not found: {0}")]

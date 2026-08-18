@@ -1,13 +1,20 @@
 bind_addr = "0.0.0.0:8080"
 # Số inference song song trên toàn server.
-# NUC (CPU-only): 1–2. GPU lớn: tăng dần rồi đo RTF/VRAM, đừng đoán.
-# Bất biến cần giữ: max_concurrent_inference * model.n_threads <= số core vật lý.
-max_concurrent_inference = 2
+# Bất biến BẮT BUỘC: max_concurrent_inference * model.n_threads <= số core - 2.
+# Vượt qua là sập, không phải chậm dần: ggml spin-wait ở barrier nên 4 stream x 8
+# thread trên máy 16 core đo được RTF 2.19 (so với 0.033 khi 2 stream x 8 thread).
+# Đo trên Core Ultra 9 285H (6 P-core + 8 E-core + 2 LP-E), model base, đoạn 20 s:
+#   threads=8, streams=1 -> partial 257 ms, final 1128 ms, ~18.8 stream ở RTF=1
+#   threads=4, streams=3 -> partial 317 ms, final 1326 ms, ~25.0 stream ở RTF=1
+# Mặc định lấy cấu hình cân bằng; cần độ trễ thấp nhất thì đổi thành 1 x 8 thread.
+max_concurrent_inference = 3
 
 [model]
 path = "models/ggml-large-v3-turbo.bin"
 # Rỗng = auto-detect (thêm một lượt decode, chậm hơn).
 language = "vi"
+# ĐỪNG đặt bằng số core: threads = nproc làm mọi thứ sập (đo được 14 thread trên
+# 14 core chậm gấp 6 lần 12 thread). Chừa lại ít nhất 2 core.
 n_threads = 4
 use_gpu = true
 gpu_device = 0
@@ -18,6 +25,9 @@ beam_size = 0
 # 200 ms audio tốn gần bằng decode 30 s.
 min_audio_ms = 1000
 initial_prompt = ""
+# Partial chỉ chạy encoder đúng độ dài cửa sổ thay vì luôn 30 s — khoản tiết kiệm
+# lớn nhất của đường partial. Tắt nếu thấy rơi chữ ở cuối cửa sổ partial.
+scale_partial_audio_ctx = true
 
 [vad]
 # Rỗng = energy VAD (chỉ nên dùng khi dev; nhạc/tiếng ồn sẽ bị tính là giọng nói).

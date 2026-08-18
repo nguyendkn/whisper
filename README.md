@@ -62,8 +62,9 @@ hai gạch dưới tách theo tầng) hoặc đổi file bằng `WHISPER_RT_CONF
 
 `GET /health` → trạng thái, version whisper.cpp, số permit còn rảnh.
 
-`POST /v1/transcribe` — body là file WAV (int hoặc float, sample rate/channels nào
-cũng được), trả toàn văn + segment:
+`POST /v1/transcribe` — body là file audio (mp3, wav, flac, ogg, m4a — sample rate
+và số kênh nào cũng được, giải mã bằng symphonia nên không cần ffmpeg), trả toàn
+văn + segment:
 
 ```bash
 curl --data-binary @mau.wav http://127.0.0.1:8080/v1/transcribe
@@ -97,6 +98,51 @@ lượt đã chốt cộng đuôi hiện tại.
 - **VAD cắt câu**: `vad.silence_ms_for_end` quyết định chỗ cắt. Nói chậm/nhiều nhịp
   nghỉ mà để thấp thì câu bị cắt giữa cụm từ.
 - Log `rtf` theo từng chunk: `rtf` gần 1 nghĩa là sắp không theo kịp realtime.
+
+## Đo và tối ưu hiệu năng
+
+`crates/cli` có sẵn chế độ benchmark; `scripts/bench_sweep.sh` quét tham số và in bảng:
+
+```bash
+./scripts/bench_sweep.sh models/ggml-base.bin samples/mau.mp3
+# quét riêng throughput với tổng thread cố định:
+SKIP_PHASE1=1 CPU_BUDGET=12 CONCURRENCY_LIST="1 2 3 4 6" \
+  ./scripts/bench_sweep.sh models/ggml-base.bin samples/mau.mp3
+# ghim vào một nhóm core (CPU hybrid):
+PIN=0-5 ./scripts/bench_sweep.sh models/ggml-tiny.bin samples/mau.mp3
+```
+
+Ba con số nó đo: độ trễ partial (người dùng cảm nhận), độ trễ final, và throughput
+tổng khi N stream chạy song song (`streams_at_rtf1` = số session một máy gánh được).
+
+### Kết quả đo trên Intel Core Ultra 9 285H (16 core hybrid: 6 P + 8 E + 2 LP-E, CPU-only)
+
+Model `base`, đoạn 20 s, cửa sổ partial 6 s:
+
+| threads | streams | partial | final | streams @ RTF=1 |
+|---|---|---|---|---|
+| 8 | 1 | 257 ms | 1128 ms | 18.8 |
+| 12 | 1 | 249 ms | 1107 ms | 18.0 |
+| 4 | 1 | 317 ms | 1460 ms | 13.1 |
+| 4 | 3 | 317 ms | 1326 ms | **25.0** |
+
+Bốn kết luận rút ra từ vòng đo, đều đã đưa vào mặc định của `config/default.toml`:
+
+1. **`scale_partial_audio_ctx` là khoản lãi lớn nhất của đường partial**: thu nhỏ
+   encoder context theo đúng độ dài cửa sổ làm partial nhanh **2,3×**
+   (`tiny`, 8 thread: 292 ms → 129 ms). Final vẫn chạy full context để không mất
+   chất lượng cuối câu.
+2. **Đừng bao giờ đặt `n_threads` bằng số core.** Trên máy này 14 thread/14 core
+   chậm gấp 6 lần 12 thread, 16 thread chậm gấp 18 lần 8 thread. Chừa ≥ 2 core.
+3. **Oversubscribe không xuống dốc từ từ mà sập**: 4 stream × 8 thread cho RTF
+   2,19 (không kịp realtime) trong khi 2 stream × 8 thread cho 0,033. Giữ
+   `streams × threads ≤ số core − 2`.
+4. **Feature `openmp` chậm hơn** trên CPU hybrid này (1,3–1,9× ở mọi mức thread),
+   và ghim riêng vào P-core cũng chậm hơn (mất 8 E-core). Để mặc định.
+
+Với cùng tổng số thread, chia thành nhiều stream ít thread cho throughput cao hơn
+(+33%) nhưng độ trễ mỗi stream cao hơn — chọn theo mục tiêu: hội thoại realtime thì
+ưu tiên độ trễ, xử lý hàng loạt thì ưu tiên throughput.
 
 ## Test
 
