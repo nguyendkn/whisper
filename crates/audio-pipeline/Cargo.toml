@@ -1,0 +1,22 @@
+[package]
+name = "audio-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Capture, resample về 16 kHz mono, VAD và sliding-window buffer."
+
+[dependencies]
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rubato = "0.16"
+cpal = { version = "0.18", optional = true }
+whisper-rs = { workspace = true, optional = true }
+
+[features]
+default = ["vad-silero"]
+# Silero VAD do whisper.cpp bundle sẵn — không cần onnxruntime.
+vad-silero = ["dep:whisper-rs"]
+# Chỉ `cli` cần: kéo theo ALSA/CoreAudio, server không dùng.
+capture = ["dep:cpal"]

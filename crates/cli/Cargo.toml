@@ -1,0 +1,31 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Test local: mic hoặc file WAV -> transcript trên terminal."
+
+[[bin]]
+name = "whisper-rt"
+path = "src/main.rs"
+
+[dependencies]
+whisper-core = { workspace = true }
+audio-pipeline = { workspace = true, features = ["capture"] }
+stream-engine = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+hound = "3.5"
+
+[features]
+default = ["vad-silero"]
+vad-silero = ["stream-engine/vad-silero", "audio-pipeline/vad-silero"]
+cuda = ["stream-engine/cuda", "whisper-core/cuda"]
+vulkan = ["stream-engine/vulkan", "whisper-core/vulkan"]
+metal = ["stream-engine/metal", "whisper-core/metal"]
+openblas = ["stream-engine/openblas", "whisper-core/openblas"]
+openmp = ["stream-engine/openmp", "whisper-core/openmp"]

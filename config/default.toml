@@ -1,0 +1,39 @@
+bind_addr = "0.0.0.0:8080"
+# Số inference song song trên toàn server.
+# NUC (CPU-only): 1–2. GPU lớn: tăng dần rồi đo RTF/VRAM, đừng đoán.
+# Bất biến cần giữ: max_concurrent_inference * model.n_threads <= số core vật lý.
+max_concurrent_inference = 2
+
+[model]
+path = "models/ggml-large-v3-turbo.bin"
+# Rỗng = auto-detect (thêm một lượt decode, chậm hơn).
+language = "vi"
+n_threads = 4
+use_gpu = true
+gpu_device = 0
+flash_attn = false
+# <=1 = greedy. Beam chỉ dùng cho lượt Final.
+beam_size = 0
+# Chunk ngắn hơn ngưỡng này bị bỏ: whisper pad mọi input lên 30 s nên decode
+# 200 ms audio tốn gần bằng decode 30 s.
+min_audio_ms = 1000
+initial_prompt = ""
+
+[vad]
+# Rỗng = energy VAD (chỉ nên dùng khi dev; nhạc/tiếng ồn sẽ bị tính là giọng nói).
+model_path = "models/ggml-silero-v5.1.2.bin"
+# Ngưỡng/độ dài im lặng quyết định chỗ cắt câu: nói chậm, nhiều khoảng nghỉ thì
+# tăng silence_ms_for_end, nếu không câu sẽ bị cắt giữa cụm từ.
+threshold = 0.5
+silence_ms_for_end = 800
+min_speech_ms = 128
+n_threads = 2
+use_gpu = false
+
+[session]
+# Chốt cưỡng bức nếu một lượt nói dài quá mức (giây).
+max_utterance_secs = 25.0
+# Partial chỉ decode đuôi này, không decode lại cả lượt nói.
+partial_window_secs = 6.0
+partial_interval_ms = 800
+pre_roll_secs = 0.4

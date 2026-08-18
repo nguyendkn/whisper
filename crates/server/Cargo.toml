@@ -1,0 +1,39 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "WebSocket/HTTP API cho whisper-rt. Chỉ biết giao thức, không biết whisper."
+
+[[bin]]
+name = "whisper-rt-server"
+path = "src/main.rs"
+
+[dependencies]
+whisper-core = { workspace = true }
+audio-pipeline = { workspace = true }
+stream-engine = { workspace = true }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+config = { version = "0.15", default-features = false, features = ["toml"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+hound = "3.5"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"
+
+[features]
+default = ["vad-silero"]
+vad-silero = ["stream-engine/vad-silero", "audio-pipeline/vad-silero"]
+cuda = ["stream-engine/cuda", "whisper-core/cuda"]
+vulkan = ["stream-engine/vulkan", "whisper-core/vulkan"]
+metal = ["stream-engine/metal", "whisper-core/metal"]
+openblas = ["stream-engine/openblas", "whisper-core/openblas"]
+openmp = ["stream-engine/openmp", "whisper-core/openmp"]

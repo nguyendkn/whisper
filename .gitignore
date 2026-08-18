@@ -1,0 +1,31 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Model weights (tải bằng scripts/download_model.sh)
+/models/*
+!/models/.gitkeep
+
+# Config riêng từng máy
+config/local.toml
+config/*.local.toml
+
+# Audio mẫu / output
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Log & profiling
+*.log
+perf.data*
+flamegraph.svg
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

@@ -1,0 +1,25 @@
+[package]
+name = "stream-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Ghép audio-pipeline với core: session streaming, partial/final, giới hạn concurrency."
+
+[dependencies]
+whisper-core = { workspace = true }
+audio-pipeline = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = ["vad-silero"]
+vad-silero = ["audio-pipeline/vad-silero"]
+capture = ["audio-pipeline/capture"]
+cuda = ["whisper-core/cuda"]
+vulkan = ["whisper-core/vulkan"]
+metal = ["whisper-core/metal"]
+openblas = ["whisper-core/openblas"]
+openmp = ["whisper-core/openmp"]

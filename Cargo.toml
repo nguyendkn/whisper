@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/audio-pipeline",
+    "crates/stream-engine",
+    "crates/server",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json", "ansi"] }
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bytes = "1"
+whisper-rs = { version = "0.16", default-features = false, features = ["tracing_backend"] }
+
+# workspace-internal
+whisper-core = { path = "crates/core", package = "core" }
+audio-pipeline = { path = "crates/audio-pipeline" }
+stream-engine = { path = "crates/stream-engine" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

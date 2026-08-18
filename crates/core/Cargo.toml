@@ -1,0 +1,30 @@
+[package]
+name = "core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Whisper inference core: PCM f32 16 kHz mono in, text out."
+
+[lib]
+name = "whisper_core"
+path = "src/lib.rs"
+
+[dependencies]
+whisper-rs = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+hound = "3.5"
+
+[features]
+default = []
+# Backend passthrough — chọn đúng một cái theo phần cứng đích.
+cuda = ["whisper-rs/cuda"]
+vulkan = ["whisper-rs/vulkan"]
+metal = ["whisper-rs/metal"]
+coreml = ["whisper-rs/coreml"]
+hipblas = ["whisper-rs/hipblas"]
+openblas = ["whisper-rs/openblas"]
+openmp = ["whisper-rs/openmp"]
