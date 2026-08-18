@@ -136,10 +136,11 @@ Model `large-v3-turbo` (809M), cùng máy, CPU-only, đoạn 20 s:
 | 4 | 1 | 3 881 ms | 20 532 ms (**RTF 1,03**) | 1,1 |
 
 Đọc bảng này trước khi chọn model: turbo trên CPU-only chỉ gánh được **~2 stream**,
-và với 4 thread thì **không kịp realtime cho một stream** (RTF > 1) — tức mặc định
-`n_threads = 4, max_concurrent_inference = 3` là dành cho `base`/`small`. Dùng turbo
-thì hoặc chuyển sang GPU (feature `cuda`/`vulkan`), hoặc đặt
-`n_threads = 12, max_concurrent_inference = 1` và chấp nhận partial ~2 s.
+và với 4 thread thì **không kịp realtime cho một stream** (RTF > 1). Vì vậy mặc định
+là `n_threads = 12, max_concurrent_inference = 1` — cấu hình độ trễ thấp nhất và là
+cấu hình duy nhất chạy được turbo trên CPU (partial ~2 s). Cần nhiều session thì hoặc
+chuyển sang GPU (feature `cuda`/`vulkan`), hoặc dùng `base`/`small` rồi chia thành
+nhiều stream ít thread (4 thread × 3 stream, xem bảng trên).
 
 Với turbo, `scale_partial_audio_ctx` còn quan trọng hơn nữa: **4,3×**
 (8 593 ms → 1 985 ms cho cửa sổ 6 s). Tắt nó thì partial có RTF 1,43 — vô dụng.
@@ -160,7 +161,10 @@ Bốn kết luận rút ra từ vòng đo, đều đã đưa vào mặc định 
 
 Với cùng tổng số thread, chia thành nhiều stream ít thread cho throughput cao hơn
 (+33%) nhưng độ trễ mỗi stream cao hơn — chọn theo mục tiêu: hội thoại realtime thì
-ưu tiên độ trễ, xử lý hàng loạt thì ưu tiên throughput.
+ưu tiên độ trễ (mặc định), xử lý hàng loạt thì ưu tiên throughput.
+
+Mặc định `n_threads = 12` được đo trên máy 16 core. Trên máy khác hãy đặt lại theo
+đúng bất biến `streams × threads ≤ số core − 2`, đừng giữ nguyên 12.
 
 ### Ảo giác trên khoảng lặng
 

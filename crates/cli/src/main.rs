@@ -24,10 +24,10 @@ struct Args {
     /// Mã ngôn ngữ; bỏ trống để auto-detect.
     #[arg(long, default_value = "vi")]
     language: String,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 12)]
     threads: i32,
     /// Số inference song song.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 1)]
     concurrency: usize,
     /// Đọc từ file audio (mp3/wav/flac/ogg/m4a) thay vì mic.
     #[arg(long)]

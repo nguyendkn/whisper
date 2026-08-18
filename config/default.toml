@@ -6,8 +6,12 @@ bind_addr = "0.0.0.0:8080"
 # Đo trên Core Ultra 9 285H (6 P-core + 8 E-core + 2 LP-E), model base, đoạn 20 s:
 #   threads=8, streams=1 -> partial 257 ms, final 1128 ms, ~18.8 stream ở RTF=1
 #   threads=4, streams=3 -> partial 317 ms, final 1326 ms, ~25.0 stream ở RTF=1
-# Mặc định lấy cấu hình cân bằng; cần độ trễ thấp nhất thì đổi thành 1 x 8 thread.
-max_concurrent_inference = 3
+# Mặc định lấy cấu hình độ-trễ-thấp-nhất (1 stream, 12 thread) — cũng là cấu hình
+# duy nhất chạy được large-v3-turbo trên CPU: turbo với 4 thread cho RTF 1,03,
+# tức không kịp realtime dù chỉ một stream. Cần nhiều session thì hoặc lên GPU,
+# hoặc dùng base/small rồi chia thành nhiều stream ít thread (4 thread x 3 stream
+# cho throughput cao hơn 33%).
+max_concurrent_inference = 1
 
 [model]
 path = "models/ggml-large-v3-turbo.bin"
@@ -15,7 +19,7 @@ path = "models/ggml-large-v3-turbo.bin"
 language = "vi"
 # ĐỪNG đặt bằng số core: threads = nproc làm mọi thứ sập (đo được 14 thread trên
 # 14 core chậm gấp 6 lần 12 thread). Chừa lại ít nhất 2 core.
-n_threads = 4
+n_threads = 12
 use_gpu = true
 gpu_device = 0
 flash_attn = false

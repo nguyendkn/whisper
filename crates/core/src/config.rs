@@ -45,7 +45,7 @@ impl Default for WhisperConfig {
         Self {
             model_path: PathBuf::from("models/ggml-large-v3-turbo.bin"),
             language: Some("vi".into()),
-            n_threads: 4,
+            n_threads: 12,
             translate: false,
             beam_size: None,
             temperature: 0.0,
@@ -56,7 +56,7 @@ impl Default for WhisperConfig {
             min_audio_ms: 1_000,
             no_speech_thold: 0.6,
             min_confidence: 0.0,
-            state_pool_size: 2,
+            state_pool_size: 1,
             scale_partial_audio_ctx: true,
         }
     }
