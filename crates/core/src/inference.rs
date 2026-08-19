@@ -74,13 +74,16 @@ impl TranscriptResult {
 /// phải async I/O.
 ///
 /// `prompt` là prompt mồi cho riêng lượt này (thường là text đã chốt của lượt
-/// trước); `None` = dùng `initial_prompt` tĩnh trong config.
+/// trước); `None` = dùng `initial_prompt` tĩnh trong config. `language` ép ngôn ngữ
+/// cho riêng lượt này, để một model dùng được cho nhiều session khác ngôn ngữ mà
+/// không phải load hai bản weights.
 pub fn transcribe(
     model: &WhisperModel,
     state: &mut WhisperState,
     pcm: &[f32],
     mode: DecodeMode,
     prompt: Option<&str>,
+    language: Option<&str>,
 ) -> Result<TranscriptResult, AsrError> {
     let config = model.config();
     let audio_ms = (pcm.len() as u64 * 1_000 / WHISPER_SAMPLE_RATE as u64) as u32;
@@ -91,7 +94,7 @@ pub fn transcribe(
         });
     }
 
-    let params = build_params(config, mode, pcm.len(), prompt);
+    let params = build_params(config, mode, pcm.len(), prompt, language);
     let started = Instant::now();
     state.full(params, pcm).map_err(AsrError::Inference)?;
     let inference_ms = started.elapsed().as_millis() as u64;
@@ -216,6 +219,7 @@ fn build_params<'a>(
     mode: DecodeMode,
     samples: usize,
     prompt: Option<&'a str>,
+    language: Option<&'a str>,
 ) -> FullParams<'a, 'a> {
     let strategy = match (mode, config.beam_size) {
         (DecodeMode::Final, Some(beam_size)) => SamplingStrategy::BeamSearch {
@@ -255,10 +259,9 @@ fn build_params<'a>(
     params.set_suppress_blank(true);
     params.set_suppress_nst(true);
     params.set_no_speech_thold(config.no_speech_thold);
-    if let Some(language) = config.language.as_deref() {
-        params.set_language(Some(language));
-    } else {
-        params.set_detect_language(true);
+    match language.or(config.language.as_deref()) {
+        Some(language) => params.set_language(Some(language)),
+        None => params.set_detect_language(true),
     }
     // Prompt động (text đã chốt) thắng prompt tĩnh: nó cho model ngữ cảnh thật của
     // cuộc nói, giúp giữ thuật ngữ và tên riêng nhất quán giữa các lượt.

@@ -24,6 +24,9 @@ pub struct SessionConfig {
     pub condition_on_previous: bool,
     /// Số ký tự cuối của text đã chốt dùng làm prompt.
     pub prompt_chars: usize,
+    /// Ép ngôn ngữ cho session này, bỏ qua ngôn ngữ trong config của model.
+    /// `None` = theo config model (hoặc auto-detect nếu config để trống).
+    pub language: Option<String>,
     /// Bật LocalAgreement-2 cho partial: chỉ hiện phần hai lượt decode liên tiếp
     /// đồng ý, và cắt audio đã chốt khỏi cửa sổ decode sau. Text không bị viết lại,
     /// và cửa sổ partial không phình theo độ dài lượt nói.
@@ -42,6 +45,7 @@ impl Default for SessionConfig {
             condition_on_previous: false,
             prompt_chars: 200,
             local_agreement: true,
+            language: None,
         }
     }
 }

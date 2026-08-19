@@ -62,6 +62,50 @@ cargo run --release -p cli -- --file mau.mp3 --language vi \
 Config: `config/default.toml`. Override bằng env (`WHISPER_RT__MODEL__PATH=...`,
 hai gạch dưới tách theo tầng) hoặc đổi file bằng `WHISPER_RT_CONFIG`.
 
+## UI
+
+`GET /` là trang transcript realtime, nhúng thẳng trong binary (không tài nguyên ngoài, không
+CDN — phải chạy được trong mạng nội bộ). Mic đi qua `AudioWorklet`, gửi PCM i16 ở **đúng sample
+rate của mic** rồi để server resample về 16 kHz. Phần `stable_text` (LocalAgreement đã chốt) in
+đậm, đuôi còn có thể đổi in mờ, kèm RTF và độ trễ partial đo tại client.
+
+Bộ chọn ngôn ngữ gửi `?language=`, ép ngôn ngữ **theo session** chứ không phải theo model — nên
+một bản weights phục vụ được cả tiếng Việt và tiếng Anh mà không cần load hai model. Mic chỉ hoạt
+động trong secure context: HTTPS, hoặc `localhost` khi chạy local.
+
+## Deploy lên k3s (homelab)
+
+`deploy/k3s/whisper-rt.yaml` — namespace `whisper`, Deployment + Service + Ingress (traefik,
+host `whisper.boltz.one`). TLS do traefik cung cấp qua TLSStore `default` (Cloudflare Origin CA),
+Cloudflare proxy đứng trước nên WAN của nhà không lộ ra DNS công khai.
+
+```bash
+cp target/release/whisper-rt-server ~/deploy/whisper-rt/bin/    # binary pod sẽ chạy
+kubectl apply -f deploy/k3s/whisper-rt.yaml
+kubectl -n whisper rollout status deploy/whisper-rt
+```
+
+Pod **không dùng image tự build**: user deploy trên máy này không có quyền vào docker socket và
+sudo cần mật khẩu, nên pod chạy base image `ubuntu:24.04` rồi mount binary + model từ host
+(`hostPath`, read-only). Binary build tại chỗ chỉ cần glibc ≤ 2.38 nên 24.04 (2.39) chạy được, và
+pod chạy uid 1002 cho khớp chủ sở hữu file. Muốn đóng image thật thì cần quyền docker, hoặc kaniko
+trong cluster kèm credential push Harbor — khi đó thay `image:` và bỏ hai volume `hostPath`.
+
+Model **không nằm trong image**: mount từ `~/projects/whisper/models`. Đổi model thì sửa ConfigMap
+`whisper-rt-config` rồi `kubectl -n whisper rollout restart deploy/whisper-rt`. Đã đặt
+`cpu_thread_budget = 8` (không phải `số core - 2`) vì máy này còn chạy các workload khác.
+
+DNS: bản ghi `whisper.boltz.one` (proxied) do CronJob `cloudflare-ddns` trong repo homelab giữ
+trỏ đúng WAN hiện tại — thêm vào `CF_RECORDS` là đủ, nhưng **record phải được tạo một lần** trước
+đó (script chỉ cập nhật, không tạo). Kiểm tra toàn tuyến:
+
+```bash
+curl -s https://whisper.boltz.one/health
+curl -sI --http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+     -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+     https://whisper.boltz.one/v1/stream | head -1     # phải là 101
+```
+
 ## API
 
 `GET /health` → trạng thái, version whisper.cpp, số permit còn rảnh.

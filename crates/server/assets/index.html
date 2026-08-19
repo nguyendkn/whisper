@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>whisper-rt</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #ffffff; --border: #e3e3e7; --text: #16161a;
+    --muted: #6b6b76; --accent: #2f6fed; --stable: #16161a; --pending: #8a8a95;
+    --ok: #1a7f4b; --warn: #b45309; --err: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1013; --panel: #171a1f; --border: #2a2e36; --text: #e9e9ee;
+      --muted: #9a9aa5; --accent: #6c9bff; --stable: #e9e9ee; --pending: #85858f;
+      --ok: #4ade80; --warn: #fbbf24; --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+    font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin-top: 16px;
+  }
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button {
+    font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--text); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--panel); color: var(--text); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.live { background: var(--ok); }
+  .dot.err { background: var(--err); }
+  #status { color: var(--muted); font-size: 13px; }
+  #live { min-height: 3.2em; font-size: 19px; line-height: 1.55; }
+  /* Phần LocalAgreement đã chốt: hai lượt decode liên tiếp đã đồng ý, không bị
+     viết lại nữa -> in đậm rõ. Phần đuôi còn có thể đổi -> in mờ. */
+  #stable { color: var(--stable); }
+  #pending { color: var(--pending); }
+  #transcript p { margin: 0 0 10px; }
+  #transcript .meta { color: var(--muted); font-size: 12px; margin-right: 8px; font-variant-numeric: tabular-nums; }
+  .stats { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 12.5px;
+           font-variant-numeric: tabular-nums; margin-top: 10px; }
+  .stats b { color: var(--text); font-weight: 600; }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  code { background: rgba(127,127,127,0.14); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>whisper-rt</h1>
+    <span class="sub">nhận dạng giọng nói realtime · whisper.cpp + Rust</span>
+  </header>
+
+  <div class="panel">
+    <div class="controls">
+      <button id="toggle">Bắt đầu nói</button>
+      <select id="language">
+        <option value="vi">Tiếng Việt</option>
+        <option value="en">English</option>
+      </select>
+      <button id="clear" class="secondary">Xoá</button>
+      <span id="status"><span class="dot" id="dot"></span> chưa kết nối</span>
+    </div>
+    <div class="stats">
+      <span>RTF <b id="rtf">–</b></span>
+      <span>độ trễ partial <b id="latency">–</b></span>
+      <span>lượt nói <b id="utterances">0</b></span>
+      <span>gửi <b id="sent">0</b> KB</span>
+      <span>mic <b id="rate">–</b></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div id="live"><span id="stable"></span> <span id="pending"></span></div>
+  </div>
+
+  <div class="panel">
+    <div id="transcript"></div>
+    <div class="hint">
+      Chữ đậm là phần engine đã chốt (LocalAgreement-2), chữ mờ là đuôi còn có thể đổi.
+      Mic chỉ chạy trên HTTPS hoặc <code>localhost</code>. Audio gửi lên dạng PCM i16 ở đúng
+      sample rate của mic, server tự resample về 16 kHz.
+    </div>
+  </div>
+</main>
+
+<script>
+const els = {
+  toggle: document.getElementById('toggle'),
+  clear: document.getElementById('clear'),
+  language: document.getElementById('language'),
+  status: document.getElementById('status'),
+  dot: document.getElementById('dot'),
+  live: document.getElementById('live'),
+  stable: document.getElementById('stable'),
+  pending: document.getElementById('pending'),
+  transcript: document.getElementById('transcript'),
+  rtf: document.getElementById('rtf'),
+  latency: document.getElementById('latency'),
+  utterances: document.getElementById('utterances'),
+  sent: document.getElementById('sent'),
+  rate: document.getElementById('rate'),
+};
+
+let ws = null, audioCtx = null, stream = null, node = null, running = false;
+let bytesSent = 0, utterances = 0, lastChunkAt = 0;
+
+function setStatus(text, kind) {
+  els.status.innerHTML = '<span class="dot' + (kind ? ' ' + kind : '') + '"></span> ' + text;
+}
+
+// Worklet chạy trên audio thread: gom frame rồi đẩy sang main thread dạng PCM i16.
+const workletSource = `
+class PcmPump extends AudioWorkletProcessor {
+  constructor() { super(); this.buffer = []; this.filled = 0; this.chunk = 2048; }
+  process(inputs) {
+    const channel = inputs[0] && inputs[0][0];
+    if (channel) {
+      this.buffer.push(new Float32Array(channel));
+      this.filled += channel.length;
+      if (this.filled >= this.chunk) {
+        const merged = new Int16Array(this.filled);
+        let at = 0;
+        for (const part of this.buffer) {
+          for (let i = 0; i < part.length; i++) {
+            const clamped = Math.max(-1, Math.min(1, part[i]));
+            merged[at++] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+          }
+        }
+        this.port.postMessage(merged, [merged.buffer]);
+        this.buffer = []; this.filled = 0;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-pump', PcmPump);
+`;
+
+function wsUrl(sampleRate) {
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  const params = new URLSearchParams({
+    sample_rate: String(sampleRate),
+    channels: '1',
+    language: els.language.value,
+  });
+  return scheme + '://' + location.host + '/v1/stream?' + params.toString();
+}
+
+function appendFinal(update) {
+  const text = (update.text || '').trim();
+  if (!text) return;
+  utterances += 1;
+  els.utterances.textContent = String(utterances);
+  const p = document.createElement('p');
+  const meta = document.createElement('span');
+  meta.className = 'meta';
+  meta.textContent = '#' + update.utterance + ' · ' + (update.audio_ms / 1000).toFixed(1) + 's · rtf ' + update.rtf.toFixed(2);
+  p.appendChild(meta);
+  p.appendChild(document.createTextNode(text));
+  els.transcript.prepend(p);
+}
+
+async function start() {
+  setStatus('đang xin quyền mic…');
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  audioCtx = new AudioContext();
+  els.rate.textContent = audioCtx.sampleRate + ' Hz';
+
+  ws = new WebSocket(wsUrl(audioCtx.sampleRate));
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => setStatus('đang nghe', 'live');
+  ws.onclose = () => { setStatus('đã ngắt kết nối'); if (running) stop(); };
+  ws.onerror = () => setStatus('lỗi kết nối', 'err');
+  ws.onmessage = (event) => {
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    if (payload.type === 'partial') {
+      const stable = payload.stable_text || '';
+      els.stable.textContent = stable;
+      els.pending.textContent = (payload.text || '').slice(stable.length).trim();
+      els.rtf.textContent = payload.rtf.toFixed(2);
+      if (lastChunkAt) els.latency.textContent = Math.round(performance.now() - lastChunkAt) + ' ms';
+    } else if (payload.type === 'final') {
+      appendFinal(payload);
+      els.stable.textContent = '';
+      els.pending.textContent = '';
+      els.rtf.textContent = payload.rtf.toFixed(2);
+    } else if (payload.type === 'error') {
+      setStatus('lỗi: ' + payload.message, 'err');
+    }
+  };
+
+  const blobUrl = URL.createObjectURL(new Blob([workletSource], { type: 'application/javascript' }));
+  await audioCtx.audioWorklet.addModule(blobUrl);
+  URL.revokeObjectURL(blobUrl);
+
+  node = new AudioWorkletNode(audioCtx, 'pcm-pump');
+  node.port.onmessage = (event) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(event.data);
+    bytesSent += event.data.byteLength;
+    lastChunkAt = performance.now();
+    els.sent.textContent = (bytesSent / 1024).toFixed(0);
+  };
+  audioCtx.createMediaStreamSource(stream).connect(node);
+
+  running = true;
+  els.toggle.textContent = 'Dừng';
+  els.language.disabled = true;
+}
+
+function stop() {
+  running = false;
+  els.toggle.textContent = 'Bắt đầu nói';
+  els.language.disabled = false;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    // Chốt câu cuối rồi mới đóng, để không mất phần đang nói.
+    ws.send(JSON.stringify({ type: 'eos' }));
+    setTimeout(() => ws && ws.close(), 1500);
+  }
+  if (node) { node.port.onmessage = null; node.disconnect(); node = null; }
+  if (stream) { stream.getTracks().forEach((track) => track.stop()); stream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  setStatus('đã dừng');
+}
+
+els.toggle.addEventListener('click', async () => {
+  els.toggle.disabled = true;
+  try {
+    if (running) stop();
+    else await start();
+  } catch (err) {
+    setStatus('không mở được mic: ' + err.message, 'err');
+    running = false;
+    els.toggle.textContent = 'Bắt đầu nói';
+  } finally {
+    els.toggle.disabled = false;
+  }
+});
+
+els.clear.addEventListener('click', () => {
+  els.transcript.textContent = '';
+  els.stable.textContent = '';
+  els.pending.textContent = '';
+  utterances = 0;
+  els.utterances.textContent = '0';
+});
+
+fetch('/health').then((r) => r.json()).then((health) => {
+  document.querySelector('.sub').textContent =
+    'whisper.cpp ' + health.whisper_cpp + ' · ' + String(health.model).split('/').pop();
+}).catch(() => {});
+</script>
+</body>
+</html>

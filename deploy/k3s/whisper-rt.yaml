@@ -1,0 +1,174 @@
+# whisper-rt trên k3s của homelab, phát ra ngoài qua traefik + Cloudflare
+# (whisper.boltz.one, bản ghi do CronJob cloudflare-ddns giữ trỏ đúng WAN hiện tại).
+#
+# Không dùng image tự build: user chạy deploy không có quyền vào docker socket và
+# sudo cần mật khẩu, nên pod dùng base image sẵn có rồi mount binary + model từ host.
+# Binary build trên chính máy này nên chỉ cần glibc >= 2.38 (ubuntu:24.04 là 2.39).
+# Muốn đóng image thật thì cần quyền docker (hoặc kaniko + credential push Harbor).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: whisper
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: whisper-rt-config
+  namespace: whisper
+data:
+  default.toml: |
+    bind_addr = "0.0.0.0:8080"
+    # Máy này còn chạy các pod khác: giữ hạn mức thread ở 8 thay vì số core - 2.
+    max_concurrent_inference = 1
+    cpu_thread_budget = 8
+
+    [model]
+    path = "/models/ggml-large-v3-turbo.bin"
+    # Để trống = auto-detect; UI gửi `?language=vi|en` để ép ngôn ngữ theo session,
+    # nên một bản weights phục vụ được cả hai thứ tiếng.
+    language = ""
+    n_threads = 8
+    use_gpu = false
+    gpu_device = 0
+    flash_attn = false
+    beam_size = 5
+    min_audio_ms = 1000
+    initial_prompt = ""
+    scale_partial_audio_ctx = true
+    no_speech_thold = 0.6
+
+    [vad]
+    model_path = "/models/ggml-silero-v5.1.2.bin"
+    threshold = 0.5
+    silence_ms_for_end = 800
+    min_speech_ms = 128
+    n_threads = 2
+    use_gpu = false
+    energy_gate_threshold = 0.15
+
+    [session]
+    max_utterance_secs = 25.0
+    partial_window_secs = 6.0
+    partial_interval_ms = 800
+    pre_roll_secs = 1.0
+    max_probe_backlog_secs = 2.0
+    local_agreement = true
+    condition_on_previous = false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whisper-rt
+  namespace: whisper
+  labels:
+    app.kubernetes.io/name: whisper-rt
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    # Model 1,5 GB và chỉ có một máy: đừng chạy hai pod cùng lúc khi rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: whisper-rt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: whisper-rt
+        app.kubernetes.io/component: service
+    spec:
+      automountServiceAccountToken: false
+      # File trên host thuộc uid 1002 (ubuntu); chạy đúng uid đó để không cần root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1002
+        runAsGroup: 1002
+      containers:
+        - name: server
+          image: docker.io/library/ubuntu:24.04
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/whisper-rt/bin/whisper-rt-server"]
+          env:
+            - name: WHISPER_RT_CONFIG
+              value: /etc/whisper-rt/default
+            - name: RUST_LOG
+              value: info,whisper_rs=warn
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "8"
+              memory: 4Gi
+          # Load 1,5 GB weights từ đĩa: cho startupProbe tới 150 s trước khi coi là chết.
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - { name: bin, mountPath: /opt/whisper-rt/bin, readOnly: true }
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: config, mountPath: /etc/whisper-rt, readOnly: true }
+      volumes:
+        - name: bin
+          hostPath: { path: /home/ubuntu/deploy/whisper-rt/bin, type: Directory }
+        - name: models
+          hostPath: { path: /home/ubuntu/projects/whisper/models, type: Directory }
+        - name: config
+          configMap: { name: whisper-rt-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whisper-rt
+  namespace: whisper
+  labels:
+    app.kubernetes.io/name: whisper-rt
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: whisper-rt
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whisper-rt
+  namespace: whisper
+  labels:
+    app.kubernetes.io/name: whisper-rt
+  annotations:
+    # Upload file batch cho /v1/transcribe.
+    traefik.ingress.kubernetes.io/router.middlewares: ""
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: whisper.boltz.one
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: whisper-rt
+                port:
+                  number: 80

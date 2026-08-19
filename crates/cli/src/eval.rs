@@ -58,7 +58,7 @@ pub async fn run(
             }
         };
 
-        let result = match scheduler.submit(pcm, DecodeMode::Final, None).await {
+        let result = match scheduler.submit(pcm, DecodeMode::Final, None, None).await {
             Ok(result) => result,
             Err(err) => {
                 eprintln!("bỏ {path}: {err}");

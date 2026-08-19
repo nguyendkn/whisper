@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
         let pcm = audio_pipeline::decode_file_to_16k_mono(&path)?;
         let started = std::time::Instant::now();
         let result = scheduler
-            .submit(pcm, whisper_core::DecodeMode::Final, None)
+            .submit(pcm, whisper_core::DecodeMode::Final, None, None)
             .await?;
         let text = result.text();
         println!("{text}");

@@ -287,10 +287,11 @@ impl Session {
         let agreement = Arc::clone(&self.agreement);
         let partial_start_ms = Arc::clone(&self.partial_start_ms);
         let use_agreement = self.config.local_agreement && window_start_ms >= 0;
+        let language = self.config.language.clone();
         let session_id = self.id;
 
         tokio::spawn(async move {
-            let outcome = scheduler.submit(pcm, mode, prompt).await;
+            let outcome = scheduler.submit(pcm, mode, prompt, language).await;
             if mode == DecodeMode::Partial {
                 inflight.store(false, Ordering::Release);
             }

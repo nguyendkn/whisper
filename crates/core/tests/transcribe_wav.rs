@@ -35,7 +35,7 @@ fn transcribes_a_real_wav_file() {
     let mut state = model.create_state().expect("create state");
 
     let pcm = read_wav_mono_16k(&PathBuf::from(wav_path));
-    let result = transcribe(&model, &mut state, &pcm, DecodeMode::Final, None)
+    let result = transcribe(&model, &mut state, &pcm, DecodeMode::Final, None, None)
         .expect("transcribe should succeed");
 
     let text = result.text().to_lowercase();

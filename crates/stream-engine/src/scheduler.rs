@@ -67,6 +67,7 @@ impl InferenceScheduler {
         pcm: Vec<f32>,
         mode: DecodeMode,
         prompt: Option<String>,
+        language: Option<String>,
     ) -> Result<TranscriptResult, EngineError> {
         let queued_at = Instant::now();
         let _permit = self.budget.acquire(self.threads).await?;
@@ -84,7 +85,14 @@ impl InferenceScheduler {
         let result = tokio::task::spawn_blocking(move || {
             let mut state = pool.acquire()?;
             let model = Arc::clone(pool.model());
-            transcribe(&model, state.get_mut(), &pcm, mode, prompt.as_deref())
+            transcribe(
+                &model,
+                state.get_mut(),
+                &pcm,
+                mode,
+                prompt.as_deref(),
+                language.as_deref(),
+            )
         })
         .await
         .map_err(|e| EngineError::Join(e.to_string()))?;

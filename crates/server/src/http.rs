@@ -2,11 +2,18 @@ use audio_pipeline::decode_bytes_to_16k_mono;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::Html;
 use axum::Json;
 use serde_json::{json, Value};
 use whisper_core::DecodeMode;
 
 use crate::state::AppState;
+
+/// UI transcript realtime. Nhúng thẳng vào binary để deploy chỉ cần một file, và
+/// không có tài nguyên ngoài nào (CDN) — trang phải chạy được trong mạng nội bộ.
+pub async fn index() -> Html<&'static str> {
+    Html(include_str!("../assets/index.html"))
+}
 
 pub async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
@@ -31,7 +38,7 @@ pub async fn transcribe(
         decode_bytes_to_16k_mono(body.to_vec()).map_err(|err| bad_request(&err.to_string()))?;
     let result = state
         .scheduler
-        .submit(pcm, DecodeMode::Final, None)
+        .submit(pcm, DecodeMode::Final, None, None)
         .await
         .map_err(|err| {
             (

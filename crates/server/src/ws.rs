@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use audio_pipeline::{pcm_i16_le_to_f32, AudioResampler, TARGET_SAMPLE_RATE};
-use stream_engine::{Session, StreamEvent, TranscriptUpdate};
+use stream_engine::{Session, SessionConfig, StreamEvent, TranscriptUpdate};
 
 use crate::state::AppState;
 
@@ -76,7 +76,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: StreamParams)
         state.engines(params.language.as_deref()),
         state.new_probe(),
         event_tx,
-        state.cfg.session_config(),
+        SessionConfig {
+            // Ngôn ngữ của session ép lên model đang dùng, nên một model phục vụ
+            // được cả tiếng Việt và tiếng Anh mà không cần load hai bản weights.
+            language: params.language.clone(),
+            ..state.cfg.session_config()
+        },
     );
     let session_id = session.id();
     tracing::info!(

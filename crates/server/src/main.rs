@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::init(cfg)?;
     let app = Router::new()
+        .route("/", get(http::index))
         .route("/health", get(http::health))
         .route("/v1/transcribe", post(http::transcribe))
         .route("/v1/stream", get(ws::stream_handler))

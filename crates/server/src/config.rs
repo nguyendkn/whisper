@@ -224,6 +224,8 @@ impl ServerConfig {
             condition_on_previous: self.session.condition_on_previous,
             prompt_chars: 200,
             local_agreement: self.session.local_agreement,
+            // Ngôn ngữ mặc định của session; WebSocket có `?language=` thì override.
+            language: opt(&self.model.language),
             gate: GateConfig {
                 threshold: self.vad.threshold,
                 silence_ms_for_end: self.vad.silence_ms_for_end,
