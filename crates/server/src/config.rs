@@ -42,6 +42,9 @@ pub struct ModelSettings {
     /// 0 hoặc 1 = greedy. Beam chỉ áp dụng cho lượt `Final`.
     #[serde(default)]
     pub beam_size: i32,
+    /// Bước tăng temperature khi whisper tự thấy kết quả tệ. 0 = tắt fallback.
+    #[serde(default)]
+    pub temperature_inc: f32,
     pub min_audio_ms: u32,
     /// Bỏ segment có xác suất "không có tiếng nói" cao hơn ngưỡng (chặn ảo giác).
     #[serde(default = "default_no_speech_thold")]
@@ -79,6 +82,12 @@ pub struct SessionSettings {
     pub partial_window_secs: f32,
     pub partial_interval_ms: u64,
     pub pre_roll_secs: f32,
+    /// Mồi lượt Final bằng text đã chốt trước đó.
+    #[serde(default)]
+    pub condition_on_previous: bool,
+    /// LocalAgreement-2 cho partial: chỉ hiện phần hai lượt decode liên tiếp đồng ý.
+    #[serde(default = "default_true")]
+    pub local_agreement: bool,
     #[serde(default = "default_probe_backlog")]
     pub max_probe_backlog_secs: f32,
 }
@@ -108,6 +117,9 @@ impl ServerConfig {
             translate: false,
             beam_size: (self.model.beam_size > 1).then_some(self.model.beam_size),
             temperature: 0.0,
+            temperature_inc: self.model.temperature_inc,
+            entropy_thold: 2.4,
+            logprob_thold: -1.0,
             use_gpu: self.model.use_gpu,
             gpu_device: self.model.gpu_device,
             flash_attn: self.model.flash_attn,
@@ -117,6 +129,7 @@ impl ServerConfig {
             min_confidence: self.model.min_confidence,
             state_pool_size: self.max_concurrent_inference.max(1),
             scale_partial_audio_ctx: self.model.scale_partial_audio_ctx,
+            token_timestamps: self.session.local_agreement,
         }
     }
 
@@ -131,6 +144,9 @@ impl ServerConfig {
             // Partial luôn greedy: beam search chỉ đáng cho lượt chốt câu.
             beam_size: None,
             temperature: 0.0,
+            temperature_inc: 0.0,
+            entropy_thold: 2.4,
+            logprob_thold: -1.0,
             use_gpu: model.use_gpu,
             gpu_device: model.gpu_device,
             flash_attn: model.flash_attn,
@@ -140,6 +156,7 @@ impl ServerConfig {
             scale_partial_audio_ctx: model.scale_partial_audio_ctx,
             no_speech_thold: model.no_speech_thold,
             min_confidence: model.min_confidence,
+            token_timestamps: self.session.local_agreement,
         })
     }
 
@@ -150,6 +167,9 @@ impl ServerConfig {
             partial_interval_ms: self.session.partial_interval_ms,
             pre_roll_secs: self.session.pre_roll_secs,
             max_probe_backlog_secs: self.session.max_probe_backlog_secs,
+            condition_on_previous: self.session.condition_on_previous,
+            prompt_chars: 200,
+            local_agreement: self.session.local_agreement,
             gate: GateConfig {
                 threshold: self.vad.threshold,
                 silence_ms_for_end: self.vad.silence_ms_for_end,

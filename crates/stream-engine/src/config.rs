@@ -18,6 +18,16 @@ pub struct SessionConfig {
     /// đương `allowed_latency_limit` của RealtimeSTT.
     pub max_probe_backlog_secs: f32,
     pub gate: GateConfig,
+    /// Mồi lượt `Final` bằng text đã chốt trước đó (whisper gọi là
+    /// condition_on_previous_text). Giữ tên riêng/thuật ngữ nhất quán, nhưng nếu
+    /// một lượt bị ảo giác thì ảo giác đó sẽ được mồi tiếp sang lượt sau.
+    pub condition_on_previous: bool,
+    /// Số ký tự cuối của text đã chốt dùng làm prompt.
+    pub prompt_chars: usize,
+    /// Bật LocalAgreement-2 cho partial: chỉ hiện phần hai lượt decode liên tiếp
+    /// đồng ý, và cắt audio đã chốt khỏi cửa sổ decode sau. Text không bị viết lại,
+    /// và cửa sổ partial không phình theo độ dài lượt nói.
+    pub local_agreement: bool,
 }
 
 impl Default for SessionConfig {
@@ -29,6 +39,9 @@ impl Default for SessionConfig {
             pre_roll_secs: 1.0,
             max_probe_backlog_secs: 2.0,
             gate: GateConfig::default(),
+            condition_on_previous: false,
+            prompt_chars: 200,
+            local_agreement: true,
         }
     }
 }

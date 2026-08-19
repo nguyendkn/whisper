@@ -14,9 +14,20 @@ pub struct WhisperConfig {
     pub language: Option<String>,
     pub n_threads: i32,
     pub translate: bool,
-    /// `None` = greedy (dùng cho partial). Beam search chỉ nên bật cho `Final`.
+    /// `None` = greedy. Beam search **chỉ** áp dụng cho `Final`.
+    ///
+    /// Đo được: greedy trên utterance dài bỏ hẳn nội dung (182 xoá / 469 từ, 0 thêm),
+    /// beam 5 đưa WER so với bản decode offline từ 0,43 xuống 0,25 và chỉ tốn thêm
+    /// ~10% thời gian cho lượt Final. Partial vẫn greedy để giữ độ trễ.
     pub beam_size: Option<i32>,
     pub temperature: f32,
+    /// Bước tăng temperature khi whisper tự thấy kết quả tệ (entropy/logprob vượt
+    /// ngưỡng). 0 = tắt fallback: nhanh nhất nhưng đoạn khó sẽ sai hẳn.
+    pub temperature_inc: f32,
+    /// Ngưỡng entropy để kích hoạt fallback.
+    pub entropy_thold: f32,
+    /// Ngưỡng logprob trung bình để kích hoạt fallback.
+    pub logprob_thold: f32,
     pub use_gpu: bool,
     pub gpu_device: i32,
     pub flash_attn: bool,
@@ -28,6 +39,8 @@ pub struct WhisperConfig {
     /// hơn ngưỡng này. Trên đoạn gần như im lặng, whisper sinh ra câu học từ dữ
     /// liệu train (kiểu "hãy đăng ký kênh") — đây là cách chặn rẻ nhất.
     pub no_speech_thold: f32,
+    /// Bật mốc thời gian theo token cho lượt `Partial` — cần cho LocalAgreement.
+    pub token_timestamps: bool,
     /// Bỏ segment có độ tự tin trung bình (xác suất token) dưới ngưỡng này.
     /// 0.0 = tắt.
     pub min_confidence: f32,
@@ -47,8 +60,11 @@ impl Default for WhisperConfig {
             language: Some("vi".into()),
             n_threads: 12,
             translate: false,
-            beam_size: None,
+            beam_size: Some(5),
             temperature: 0.0,
+            temperature_inc: 0.0,
+            entropy_thold: 2.4,
+            logprob_thold: -1.0,
             use_gpu: true,
             gpu_device: 0,
             flash_attn: false,
@@ -56,6 +72,7 @@ impl Default for WhisperConfig {
             min_audio_ms: 1_000,
             no_speech_thold: 0.6,
             min_confidence: 0.0,
+            token_timestamps: false,
             state_pool_size: 1,
             scale_partial_audio_ctx: true,
         }

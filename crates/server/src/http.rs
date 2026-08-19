@@ -30,7 +30,7 @@ pub async fn transcribe(
         decode_bytes_to_16k_mono(body.to_vec()).map_err(|err| bad_request(&err.to_string()))?;
     let result = state
         .scheduler
-        .submit(pcm, DecodeMode::Final)
+        .submit(pcm, DecodeMode::Final, None)
         .await
         .map_err(|err| {
             (

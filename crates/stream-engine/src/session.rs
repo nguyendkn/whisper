@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -11,6 +11,7 @@ use crate::{
     config::SessionConfig,
     error::EngineError,
     event::{StreamEvent, TranscriptUpdate},
+    local_agreement::LocalAgreement,
     scheduler::InferenceScheduler,
     transcript::Transcript,
 };
@@ -61,6 +62,10 @@ pub struct Session {
     probe_chunk_samples: usize,
     max_probe_backlog: usize,
     transcript: Arc<Mutex<Transcript>>,
+    agreement: Arc<Mutex<LocalAgreement>>,
+    /// Mốc (ms trong lượt nói) mà cửa sổ partial tiếp theo bắt đầu — LocalAgreement
+    /// đẩy mốc này lên mỗi khi chốt thêm từ.
+    partial_start_ms: Arc<AtomicI64>,
     partial_inflight: Arc<AtomicBool>,
     last_partial_at: Instant,
     utterance: u64,
@@ -89,6 +94,8 @@ impl Session {
             probe_pending: Vec::with_capacity(probe_chunk_samples * 2),
             probe_chunk_samples,
             transcript: Arc::new(Mutex::new(Transcript::new())),
+            agreement: Arc::new(Mutex::new(LocalAgreement::new())),
+            partial_start_ms: Arc::new(AtomicI64::new(0)),
             partial_inflight: Arc::new(AtomicBool::new(false)),
             last_partial_at: Instant::now(),
             utterance: 0,
@@ -183,8 +190,49 @@ impl Session {
             return;
         }
         self.last_partial_at = Instant::now();
-        let pcm = self.buffer.tail(self.config.partial_window_secs);
-        self.spawn_decode(pcm, DecodeMode::Partial, self.utterance);
+
+        let (pcm, window_start_ms) = self.partial_window();
+        if pcm.is_empty() {
+            self.partial_inflight.store(false, Ordering::Release);
+            return;
+        }
+        self.spawn_decode(
+            pcm,
+            DecodeMode::Partial,
+            self.utterance,
+            None,
+            window_start_ms,
+        );
+    }
+
+    /// Cửa sổ audio cho lượt partial tiếp theo, kèm mốc bắt đầu của nó.
+    ///
+    /// Có LocalAgreement thì cửa sổ bắt đầu từ chỗ đã chốt — decode ít audio hơn và
+    /// không lặp lại phần đã xong. Không có thì lấy đuôi cố định như cũ.
+    fn partial_window(&mut self) -> (Vec<f32>, i64) {
+        if !self.config.local_agreement {
+            return (self.buffer.tail(self.config.partial_window_secs), -1);
+        }
+
+        let max_samples = (TARGET_SAMPLE_RATE as f32 * self.config.partial_window_secs) as usize;
+        let mut start_ms = self
+            .partial_start_ms
+            .load(Ordering::Acquire)
+            .max(self.buffer.start_ms());
+        let mut pcm = self.buffer.slice_from_ms(start_ms);
+
+        // Không chốt được gì trong một cửa sổ đầy (nhạc nền, người nói lấp bấp):
+        // trượt cửa sổ về đuôi và bỏ giao kèo cũ, nếu không cửa sổ phình mãi.
+        if pcm.len() > max_samples {
+            pcm = self.buffer.tail(self.config.partial_window_secs);
+            start_ms = self.buffer.duration_secs() as i64 * 1_000 + self.buffer.start_ms()
+                - (self.config.partial_window_secs * 1_000.0) as i64;
+            self.partial_start_ms
+                .store(start_ms.max(0), Ordering::Release);
+            self.agreement.lock().expect("agreement poisoned").slide();
+            tracing::debug!(session_id = %self.id, start_ms, "trượt cửa sổ partial, giữ phần đã chốt");
+        }
+        (pcm, start_ms.max(0))
     }
 
     fn close_utterance(&mut self) {
@@ -195,25 +243,90 @@ impl Session {
         self.buffer.clear();
         let utterance = self.utterance;
         self.utterance += 1;
-        self.spawn_decode(pcm, DecodeMode::Final, utterance);
+        let prompt = self.previous_text_prompt();
+        self.agreement.lock().expect("agreement poisoned").reset();
+        self.partial_start_ms.store(0, Ordering::Release);
+        self.spawn_decode(pcm, DecodeMode::Final, utterance, prompt, 0);
     }
 
-    fn spawn_decode(&self, pcm: Vec<f32>, mode: DecodeMode, utterance: u64) {
+    /// Đuôi text đã chốt, dùng mồi cho lượt Final tiếp theo.
+    fn previous_text_prompt(&self) -> Option<String> {
+        if !self.config.condition_on_previous {
+            return None;
+        }
+        let committed = self
+            .transcript
+            .lock()
+            .expect("transcript poisoned")
+            .committed_text();
+        if committed.is_empty() {
+            return None;
+        }
+        let start = committed
+            .char_indices()
+            .rev()
+            .take(self.config.prompt_chars)
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        Some(committed[start..].to_string())
+    }
+
+    fn spawn_decode(
+        &self,
+        pcm: Vec<f32>,
+        mode: DecodeMode,
+        utterance: u64,
+        prompt: Option<String>,
+        window_start_ms: i64,
+    ) {
         let scheduler = Arc::clone(self.engines.for_mode(mode));
         let events = self.events.clone();
         let transcript = Arc::clone(&self.transcript);
         let inflight = Arc::clone(&self.partial_inflight);
+        let agreement = Arc::clone(&self.agreement);
+        let partial_start_ms = Arc::clone(&self.partial_start_ms);
+        let use_agreement = self.config.local_agreement && window_start_ms >= 0;
         let session_id = self.id;
 
         tokio::spawn(async move {
-            let outcome = scheduler.submit(pcm, mode).await;
+            let outcome = scheduler.submit(pcm, mode, prompt).await;
             if mode == DecodeMode::Partial {
                 inflight.store(false, Ordering::Release);
             }
 
             let event = match outcome {
                 Ok(result) => {
-                    let text = result.text();
+                    let mut text = result.text();
+                    let mut stable_text = String::new();
+                    // LocalAgreement: chỉ hiện phần hai lượt liên tiếp đồng ý, và
+                    // đẩy mốc bắt đầu của cửa sổ sau lên chỗ đã chốt.
+                    if use_agreement && mode == DecodeMode::Partial {
+                        let words = result
+                            .words
+                            .iter()
+                            .map(|word| whisper_core::Word {
+                                text: word.text.clone(),
+                                start_ms: word.start_ms + window_start_ms,
+                                end_ms: word.end_ms + window_start_ms,
+                            })
+                            .collect();
+                        let mut agreement = agreement.lock().expect("agreement poisoned");
+                        agreement.insert(words);
+                        let committed = agreement.committed_text();
+                        let pending = agreement.pending_text();
+                        partial_start_ms.store(agreement.committed_end_ms(), Ordering::Release);
+                        drop(agreement);
+                        text = match (committed.is_empty(), pending.is_empty()) {
+                            (true, _) => pending.clone(),
+                            (false, true) => committed.clone(),
+                            (false, false) => format!("{committed} {pending}"),
+                        };
+                        stable_text = committed;
+                        if text.trim().is_empty() {
+                            return;
+                        }
+                    }
                     let full_text = match mode {
                         DecodeMode::Final => {
                             let outcome = transcript
@@ -239,6 +352,7 @@ impl Session {
                         session_id,
                         utterance,
                         text,
+                        stable_text,
                         full_text,
                         audio_ms: result.audio_ms,
                         rtf: result.rtf(),

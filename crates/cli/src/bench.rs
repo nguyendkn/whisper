@@ -29,7 +29,7 @@ pub async fn run(
 
     // Warm-up: lượt đầu gánh cả cấp phát state và làm nóng cache.
     scheduler
-        .submit(utterance.clone(), DecodeMode::Final)
+        .submit(utterance.clone(), DecodeMode::Final, None)
         .await?;
 
     let partial_ms = measure(&scheduler, &partial, DecodeMode::Partial, opts.repeats).await?;
@@ -45,7 +45,7 @@ pub async fn run(
         let scheduler = Arc::clone(&scheduler);
         let pcm = utterance.clone();
         tasks.push(tokio::spawn(async move {
-            scheduler.submit(pcm, DecodeMode::Final).await
+            scheduler.submit(pcm, DecodeMode::Final, None).await
         }));
     }
     for task in tasks {
@@ -75,7 +75,7 @@ async fn measure(
     let mut samples = Vec::with_capacity(repeats);
     for _ in 0..repeats.max(1) {
         let started = Instant::now();
-        scheduler.submit(pcm.to_vec(), mode).await?;
+        scheduler.submit(pcm.to_vec(), mode, None).await?;
         samples.push(started.elapsed().as_millis() as u64);
     }
     samples.sort_unstable();

@@ -28,8 +28,10 @@ n_threads = 12
 use_gpu = true
 gpu_device = 0
 flash_attn = false
-# <=1 = greedy. Beam chỉ dùng cho lượt Final.
-beam_size = 0
+# <=1 = greedy. Beam chỉ dùng cho lượt Final, partial luôn greedy.
+# Đo trên mẫu 128 s: greedy bỏ hẳn nội dung ở utterance dài (182 xoá / 469 từ, 0 thêm),
+# beam 5 hạ WER so với bản decode offline từ 0,43 xuống 0,25, tốn thêm ~10% cho Final.
+beam_size = 5
 # Chunk ngắn hơn ngưỡng này bị bỏ: whisper pad mọi input lên 30 s nên decode
 # 200 ms audio tốn gần bằng decode 30 s.
 min_audio_ms = 1000
@@ -84,3 +86,10 @@ partial_interval_ms = 800
 pre_roll_secs = 1.0
 # VAD không theo kịp luồng vào thì bỏ phần chờ cũ nhất thay vì để độ trễ phình.
 max_probe_backlog_secs = 2.0
+# LocalAgreement-2 (whisper_streaming): chỉ hiện phần hai lượt decode partial liên
+# tiếp đồng ý, và cắt audio đã chốt khỏi cửa sổ sau. Text không bị viết lại giữa các
+# lượt cập nhật, và cửa sổ partial không phình theo độ dài lượt nói.
+local_agreement = true
+# Mồi lượt Final bằng text đã chốt trước đó (condition_on_previous_text của whisper).
+# Giữ tên riêng nhất quán, nhưng ảo giác ở một lượt sẽ được mồi tiếp sang lượt sau.
+condition_on_previous = false

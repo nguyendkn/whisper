@@ -9,6 +9,9 @@ pub struct AudioRingBuffer {
     samples: VecDeque<f32>,
     sample_rate: u32,
     max_samples: usize,
+    /// Số sample đã bị bỏ khỏi đầu buffer — cần để quy đổi mốc thời gian tuyệt đối
+    /// (tính từ đầu lượt nói) sang vị trí trong buffer.
+    dropped: u64,
 }
 
 impl AudioRingBuffer {
@@ -18,6 +21,7 @@ impl AudioRingBuffer {
             samples: VecDeque::with_capacity(max_samples),
             sample_rate,
             max_samples: max_samples.max(1),
+            dropped: 0,
         }
     }
 
@@ -26,6 +30,7 @@ impl AudioRingBuffer {
         self.samples.extend(chunk.iter().copied());
         while self.samples.len() > self.max_samples {
             self.samples.pop_front();
+            self.dropped += 1;
         }
     }
 
@@ -53,6 +58,23 @@ impl AudioRingBuffer {
 
     pub fn clear(&mut self) {
         self.samples.clear();
+        self.dropped = 0;
+    }
+
+    /// Audio từ mốc `start_ms` (tính từ đầu lượt nói) tới hết buffer. Mốc đã bị
+    /// trôi khỏi buffer thì lấy từ đầu buffer.
+    pub fn slice_from_ms(&self, start_ms: i64) -> Vec<f32> {
+        let wanted = (self.sample_rate as i64 * start_ms.max(0) / 1_000) as u64;
+        let skip = wanted.saturating_sub(self.dropped) as usize;
+        if skip >= self.samples.len() {
+            return Vec::new();
+        }
+        self.samples.iter().skip(skip).copied().collect()
+    }
+
+    /// Mốc thời gian (ms, tính từ đầu lượt nói) của sample đầu tiên còn trong buffer.
+    pub fn start_ms(&self) -> i64 {
+        (self.dropped * 1_000 / self.sample_rate as u64) as i64
     }
 
     pub fn len(&self) -> usize {
@@ -86,6 +108,21 @@ mod tests {
         let snapshot = buffer.snapshot();
         assert_eq!(snapshot[0], 0.1);
         assert_eq!(snapshot[15_999], 0.2);
+    }
+
+    #[test]
+    fn slice_from_ms_accounts_for_dropped_samples() {
+        let mut buffer = AudioRingBuffer::new(16_000, 1.0);
+        buffer.push(&vec![0.1; 16_000]);
+        // Đẩy thêm 0,5 s -> 0,5 s đầu bị bỏ, buffer bắt đầu ở mốc 500 ms.
+        buffer.push(&vec![0.2; 8_000]);
+        assert_eq!(buffer.start_ms(), 500);
+        // Lấy từ mốc 1000 ms -> đúng phần 0,5 s cuối.
+        assert_eq!(buffer.slice_from_ms(1_000).len(), 8_000);
+        // Mốc đã trôi mất -> lấy từ đầu buffer.
+        assert_eq!(buffer.slice_from_ms(0).len(), 16_000);
+        // Mốc vượt quá dữ liệu -> rỗng.
+        assert!(buffer.slice_from_ms(5_000).is_empty());
     }
 
     #[test]

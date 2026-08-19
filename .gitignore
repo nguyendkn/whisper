@@ -18,8 +18,9 @@ config/*.local.toml
 *.flac
 *.ogg
 
-# Kết quả benchmark (phụ thuộc máy)
+# Kết quả benchmark và thực nghiệm (phụ thuộc máy + chứa transcript của mẫu audio)
 bench-*.txt
+/experiments/
 
 # Log & profiling
 *.log

@@ -157,6 +157,7 @@ fn payload(kind: &str, update: &TranscriptUpdate) -> String {
         "session_id": update.session_id,
         "utterance": update.utterance,
         "text": update.text,
+        "stable_text": update.stable_text,
         "full_text": update.full_text,
         "audio_ms": update.audio_ms,
         "rtf": update.rtf,

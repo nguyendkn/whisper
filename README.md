@@ -186,6 +186,66 @@ dữ liệu train (kiểu lời chào kênh YouTube). Đo trên mẫu 128 s bằ
   lặp lại cùng một câu, trong khi hai lượt nói thật liền nhau giống hệt nhau gần như
   không xảy ra. Trên mẫu trên, cách này bỏ được lần lặp thứ hai mà không cần ngưỡng.
 
+## Nghiên cứu tham chiếu và thực nghiệm độ chính xác
+
+### Nguồn
+
+- **whisper_streaming** ([ufal](https://github.com/ufal/whisper_streaming), Macháček et al.,
+  IJCNLP-AACL 2023 demo, [arXiv 2307.14743](https://arxiv.org/abs/2307.14743)) — chính sách
+  **LocalAgreement-2**: chốt tiền tố chung dài nhất của hai lần decode liên tiếp, khử trùng
+  n-gram khi ghép, cắt buffer theo ranh giới câu/segment.
+- **SimulStreaming** ([ufal](https://github.com/ufal/SimulStreaming)) — chính sách **AlignAtt**
+  (tốt hơn LocalAgreement) dùng cross-attention để quyết định khi nào dừng decode.
+  **Không cài được ở đây**: whisper.cpp không mở cross-attention từng bước decode ra.
+- **RealtimeSTT** ([KoljaB](https://github.com/KoljaB/RealtimeSTT)) — xem mục dưới.
+
+`crates/stream-engine/src/local_agreement.rs` cài LocalAgreement-2 dùng mốc thời gian theo
+token (`WhisperConfig::token_timestamps`, chỉ bật cho Partial). Cửa sổ partial bắt đầu từ mốc
+đã chốt (`AudioRingBuffer::slice_from_ms`) nên không decode lại phần đã xong. Event partial trả
+thêm `stable_text` — phần đã chốt, client render chữ chắc; phần còn lại render chữ mờ.
+
+### Thực nghiệm: cấu hình decode nào thực sự làm tăng độ chính xác
+
+Phương pháp (`scripts/experiment_accuracy.sh`, `crates/cli/src/wer.rs`): dựng tham chiếu
+**oracle** bằng một lượt decode offline chất lượng cao, rồi đo WER của từng cấu hình streaming
+so với nó — cô lập phần chất lượng mất đi *do streaming*, vì giới hạn của bản thân model là
+như nhau ở mọi cấu hình. Mẫu: 128 s TTS tiếng Việt, `large-v3-turbo`, 12 thread, 469 từ tham chiếu.
+
+| Cấu hình | WER | xoá / thay / thêm | số từ | wall |
+|---|---|---|---|---|
+| baseline (greedy final) | 0,431 | 182 / 20 / 0 | 293 | 53,8 s |
+| `--temperature-inc 0.2` | 0,431 | 182 / 20 / 0 | 293 | 55,0 s |
+| `--condition-on-previous` | 0,431 | 182 / 20 / 0 | 293 | 62,7 s |
+| **`--beam-size 5`** | **0,250** | 84 / 21 / 12 | 403 | 58,4 s |
+| beam 5 + temp fallback | 0,250 | — | — | 72,4 s |
+
+Bốn điều rút ra:
+
+1. **Greedy decode làm mất hẳn nội dung ở utterance dài** — 182 lần xoá trên 469 từ nhưng
+   **0 lần thêm**: đó là dấu hiệu bỏ nguyên đoạn, không phải nghe sai. `beam_size = 5` hạ WER
+   42% tương đối và lấy lại 110 từ. Đã thành **mặc định** cho lượt Final; partial vẫn greedy.
+   Giá phải trả đo được: Final 9 573 ms → 10 497 ms (+9,6%), partial **không đổi** (1 883 vs
+   1 873 ms) vì beam chỉ áp cho Final.
+2. **Không phải lỗi của VAD.** Chạy lại với `--vad-gate 0` và với energy VAD thay Silero cho ra
+   số **giống hệt** (0,431 / 293 từ / 5 utterance) — loại trừ hẳn nhánh VAD trước khi sửa decode.
+3. **Temperature fallback vô tác dụng ở đây**: nó chỉ kích hoạt khi entropy/logprob vượt ngưỡng,
+   mà kết quả greedy vẫn "qua" ngưỡng dù đã bỏ nội dung. Giữ mặc định tắt.
+4. **Mồi prompt bằng text trước đó cũng không đổi độ chính xác** nhưng đắt thêm 17% thời gian.
+   Giữ mặc định tắt (`session.condition_on_previous`).
+
+Ổn định text sống với LocalAgreement: phần `stable_text` chỉ dài ra chứ không bị viết lại
+(bất biến của `insert`, có test; `slide()` giữ phần đã chốt khi trượt cửa sổ). Đo trên full file:
+105/111 lần cập nhật trong cùng một utterance giữ nguyên tiền tố, 6 ngoại lệ đều nằm ở ranh giới
+utterance — nơi phần chốt reset một cách hợp lệ. Trung bình mỗi lần cập nhật: 14 từ đã chốt +
+17 từ còn có thể đổi.
+
+Hạn chế của phép đo cần nói rõ: oracle cũng dùng beam 5, nên WER-so-với-oracle có lợi cho cấu
+hình beam. Tôi thử kiểm chứng bằng ground truth thật nhưng text chính xác duy nhất lấy được
+(phần sapo) dài hơn hẳn đoạn audio 7,4 s tương ứng, nên không dùng làm reference được — con số
+tuyệt đối vì thế còn để ngỏ. Cơ chế thì đã được xác nhận độc lập: 182 lần xoá / 0 lần thêm, và
+trên đoạn ngắn 7,4 s greedy với beam cho kết quả y hệt nhau, đúng như dự đoán "chỉ utterance dài
+mới bị".
+
 ## Kỹ thuật tham chiếu từ RealtimeSTT
 
 [RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) là một engine streaming STT bằng

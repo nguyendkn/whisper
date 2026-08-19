@@ -12,6 +12,7 @@ use whisper_core::{WhisperConfig, WhisperModel};
 
 mod audio_source;
 mod bench;
+mod wer;
 
 /// Test local: mic hoặc file audio -> transcript trên terminal.
 #[derive(Debug, Parser)]
@@ -66,6 +67,26 @@ struct Args {
     #[arg(long, default_value_t = 0.0)]
     min_confidence: f32,
 
+    /// Decode cả file trong một lượt (không VAD, không partial) — dùng làm
+    /// tham chiếu "oracle" để đo phần chất lượng mất đi do streaming.
+    #[arg(long)]
+    offline: bool,
+    /// So transcript với file reference và in WER.
+    #[arg(long)]
+    wer: Option<PathBuf>,
+    /// Beam size cho lượt Final (0/1 = greedy). Mặc định 5 theo kết quả đo.
+    #[arg(long, default_value_t = 5)]
+    beam_size: i32,
+    /// Bật temperature fallback (bước tăng temperature khi kết quả tệ).
+    #[arg(long, default_value_t = 0.0)]
+    temperature_inc: f32,
+    /// Mồi lượt Final bằng text đã chốt trước đó.
+    #[arg(long)]
+    condition_on_previous: bool,
+    /// Tắt LocalAgreement-2 cho partial (hiện nguyên kết quả mỗi lượt decode).
+    #[arg(long)]
+    no_local_agreement: bool,
+
     /// Chạy benchmark trên `--file` thay vì transcribe streaming.
     #[arg(long)]
     bench: bool,
@@ -94,6 +115,9 @@ async fn main() -> anyhow::Result<()> {
         state_pool_size: args.concurrency,
         scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
         min_confidence: args.min_confidence,
+        beam_size: (args.beam_size > 1).then_some(args.beam_size),
+        temperature_inc: args.temperature_inc,
+        token_timestamps: !args.no_local_agreement,
         ..WhisperConfig::default()
     })?);
     let budget = if args.cpu_budget > 0 {
@@ -117,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
                 state_pool_size: 1,
                 scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
                 min_confidence: args.min_confidence,
+                token_timestamps: !args.no_local_agreement,
                 ..WhisperConfig::default()
             })?);
             Some(Arc::new(InferenceScheduler::with_budget(
@@ -131,6 +156,29 @@ async fn main() -> anyhow::Result<()> {
         finals: Arc::clone(&scheduler),
         partials: partial_scheduler,
     };
+
+    if args.offline {
+        let path = args
+            .file
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--offline cần --file <audio>"))?;
+        let pcm = audio_pipeline::decode_file_to_16k_mono(&path)?;
+        let started = std::time::Instant::now();
+        let result = scheduler
+            .submit(pcm, whisper_core::DecodeMode::Final, None)
+            .await?;
+        let text = result.text();
+        println!("{text}");
+        eprintln!(
+            "offline: audio_ms={} inference_ms={} rtf={:.3}",
+            result.audio_ms,
+            result.inference_ms,
+            result.rtf()
+        );
+        eprintln!("wall_ms={}", started.elapsed().as_millis());
+        report_wer(args.wer.as_deref(), &text)?;
+        return Ok(());
+    }
 
     if args.bench {
         let path = args
@@ -168,6 +216,8 @@ async fn main() -> anyhow::Result<()> {
         SessionConfig {
             partial_window_secs: args.partial_window,
             gate: GateConfig::default(),
+            condition_on_previous: args.condition_on_previous,
+            local_agreement: !args.no_local_agreement,
             ..SessionConfig::default()
         },
     );
@@ -179,7 +229,16 @@ async fn main() -> anyhow::Result<()> {
         while let Some(event) = event_rx.recv().await {
             match event {
                 StreamEvent::Partial(update) => {
-                    println!("[partial rtf={:.2}] {}", update.rtf, update.text);
+                    // Phần đã chốt in trước dấu | , phần còn có thể đổi in sau.
+                    let pending = update
+                        .text
+                        .strip_prefix(update.stable_text.as_str())
+                        .unwrap_or(&update.text)
+                        .trim();
+                    println!(
+                        "[partial rtf={:.2}] {} | {}",
+                        update.rtf, update.stable_text, pending
+                    );
                 }
                 StreamEvent::Final(update) => {
                     println!("[FINAL   rtf={:.2}] {}", update.rtf, update.text);
@@ -202,6 +261,26 @@ async fn main() -> anyhow::Result<()> {
     if !transcript.is_empty() {
         println!("\n--- toàn văn ---\n{transcript}");
     }
+    report_wer(args.wer.as_deref(), &transcript)?;
+    Ok(())
+}
+
+/// In WER nếu có reference. Dùng để so các cấu hình decode với nhau bằng số.
+fn report_wer(reference: Option<&std::path::Path>, hypothesis: &str) -> anyhow::Result<()> {
+    let Some(path) = reference else {
+        return Ok(());
+    };
+    let reference = std::fs::read_to_string(path)?;
+    let report = wer::compare(&reference, hypothesis);
+    println!(
+        "WER={:.4} errors={} sub={} del={} ins={} ref_words={}",
+        report.wer(),
+        report.errors(),
+        report.substitutions,
+        report.deletions,
+        report.insertions,
+        report.reference_words,
+    );
     Ok(())
 }
 

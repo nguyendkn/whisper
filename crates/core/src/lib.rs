@@ -10,7 +10,7 @@ pub mod state_pool;
 
 pub use config::{WhisperConfig, WHISPER_CHUNK_SECS, WHISPER_FULL_AUDIO_CTX, WHISPER_SAMPLE_RATE};
 pub use error::AsrError;
-pub use inference::{transcribe, DecodeMode, Segment, TranscriptResult};
+pub use inference::{transcribe, DecodeMode, Segment, TranscriptResult, Word};
 pub use model::WhisperModel;
 pub use state_pool::{PooledState, StatePool};
 
