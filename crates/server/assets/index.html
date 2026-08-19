@@ -99,25 +99,23 @@
 </main>
 
 <script>
-const els = {
-  toggle: document.getElementById('toggle'),
-  clear: document.getElementById('clear'),
-  language: document.getElementById('language'),
-  status: document.getElementById('status'),
-  dot: document.getElementById('dot'),
-  live: document.getElementById('live'),
-  stable: document.getElementById('stable'),
-  pending: document.getElementById('pending'),
-  transcript: document.getElementById('transcript'),
-  rtf: document.getElementById('rtf'),
-  latency: document.getElementById('latency'),
-  utterances: document.getElementById('utterances'),
-  sent: document.getElementById('sent'),
-  rate: document.getElementById('rate'),
-};
+// Sinh từ danh sách id và fail-fast: một entry thiếu ở đây từng làm handler audio
+// chết im lặng ngay frame đầu (els.level là undefined -> TypeError trước ws.send),
+// hiện ra với người dùng thành "mic không gửi được audio".
+const ELS_IDS = ['toggle', 'clear', 'language', 'status', 'dot', 'live', 'stable',
+  'pending', 'transcript', 'rtf', 'latency', 'utterances', 'sent', 'rate', 'level'];
+const els = {};
+for (const id of ELS_IDS) {
+  els[id] = document.getElementById(id);
+  if (!els[id]) {
+    document.body.textContent = 'Lỗi UI: thiếu phần tử #' + id;
+    throw new Error('missing element #' + id);
+  }
+}
 
 let ws = null, audioCtx = null, stream = null, node = null, running = false;
 let bytesSent = 0, utterances = 0, lastChunkAt = 0;
+let framesPumped = 0, pendingChunks = [];
 
 function setStatus(text, kind) {
   els.status.innerHTML = '<span class="dot' + (kind ? ' ' + kind : '') + '"></span> ' + text;
@@ -185,7 +183,14 @@ async function start() {
 
   ws = new WebSocket(wsUrl(audioCtx.sampleRate));
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => setStatus('đang nghe', 'live');
+  ws.onopen = () => {
+    setStatus('đang nghe', 'live');
+    // Xả phần audio thu được trong lúc WS còn bắt tay — người dùng bấm xong nói
+    // ngay thì chữ đầu tiên không bị mất.
+    for (const chunk of pendingChunks) { ws.send(chunk); bytesSent += chunk.byteLength; }
+    pendingChunks = [];
+    els.sent.textContent = (bytesSent / 1024).toFixed(0);
+  };
   ws.onclose = () => { setStatus('đã ngắt kết nối'); if (running) stop(); };
   ws.onerror = () => setStatus('lỗi kết nối', 'err');
   ws.onmessage = (event) => {
@@ -213,28 +218,42 @@ async function start() {
 
   node = new AudioWorkletNode(audioCtx, 'pcm-pump');
   node.port.onmessage = (event) => {
-    const samples = event.data;
-    // Mức tín hiệu tính ngay tại client: nhìn vào đây là biết mic có thu được gì,
-    // khỏi phải đoán khi transcript trống.
-    let peak = 0;
-    for (let i = 0; i < samples.length; i += 8) {
-      const value = Math.abs(samples[i]);
-      if (value > peak) peak = value;
+    // Lỗi trong handler này bị browser nuốt (chỉ ra console) — bọc lại để nó hiện
+    // lên status thay vì chết im lặng.
+    try {
+      const samples = event.data;
+      framesPumped += 1;
+      // Mức tín hiệu tính ngay tại client: nhìn vào đây là biết mic có thu được
+      // gì, khỏi phải đoán khi transcript trống.
+      let peak = 0;
+      for (let i = 0; i < samples.length; i += 8) {
+        const value = Math.abs(samples[i]);
+        if (value > peak) peak = value;
+      }
+      const db = peak > 0 ? 20 * Math.log10(peak / 32768) : -Infinity;
+      els.level.textContent = peak > 0 ? db.toFixed(0) + ' dB' : 'im lặng';
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(samples);
+        bytesSent += samples.byteLength;
+        lastChunkAt = performance.now();
+        els.sent.textContent = (bytesSent / 1024).toFixed(0);
+      } else if (ws && ws.readyState === WebSocket.CONNECTING && pendingChunks.length < 200) {
+        pendingChunks.push(samples);
+      }
+    } catch (err) {
+      setStatus('lỗi xử lý audio: ' + err.message, 'err');
     }
-    const db = peak > 0 ? 20 * Math.log10(peak / 32768) : -Infinity;
-    els.level.textContent = peak > 0 ? db.toFixed(0) + ' dB' : 'im lặng';
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(samples);
-    bytesSent += samples.byteLength;
-    lastChunkAt = performance.now();
-    els.sent.textContent = (bytesSent / 1024).toFixed(0);
   };
 
-  // Không có byte nào sau 2 s nghĩa là đồ thị audio không chạy — báo ngay thay vì
-  // để người dùng ngồi chờ một transcript không bao giờ tới.
+  // Watchdog phân biệt nguyên nhân thay vì một câu chung chung.
   setTimeout(() => {
-    if (running && bytesSent === 0) setStatus('mic không gửi được audio — kiểm tra quyền mic', 'err');
-  }, 2000);
+    if (!running || bytesSent > 0) return;
+    if (framesPumped === 0) {
+      setStatus('mic không cấp audio — kiểm tra quyền mic / thiết bị thu', 'err');
+    } else if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus('mic hoạt động nhưng chưa nối được server — kiểm tra mạng', 'err');
+    }
+  }, 3000);
   // Web Audio là pull model: node KHÔNG nối tới destination thì Chrome không gọi
   // process(), và không một byte audio nào được gửi đi. Nối qua gain 0 để đồ thị
   // được "kéo" mà không phát ra loa (tránh vọng tiếng).
@@ -252,6 +271,8 @@ async function start() {
 
 function stop() {
   running = false;
+  framesPumped = 0;
+  pendingChunks = [];
   els.toggle.textContent = 'Bắt đầu nói';
   els.language.disabled = false;
   if (ws && ws.readyState === WebSocket.OPEN) {
