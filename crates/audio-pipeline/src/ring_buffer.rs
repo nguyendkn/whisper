@@ -34,17 +34,34 @@ impl AudioRingBuffer {
         }
     }
 
+    /// Copy từ vị trí `skip` tới hết buffer bằng hai lần memcpy (VecDeque tối đa
+    /// hai đoạn liên tục) — nhanh hơn hẳn iterator từng phần tử với cửa sổ ~96k
+    /// sample mỗi lượt partial.
+    fn copy_from(&self, skip: usize) -> Vec<f32> {
+        if skip >= self.samples.len() {
+            return Vec::new();
+        }
+        let (front, back) = self.samples.as_slices();
+        let mut out = Vec::with_capacity(self.samples.len() - skip);
+        if skip < front.len() {
+            out.extend_from_slice(&front[skip..]);
+            out.extend_from_slice(back);
+        } else {
+            out.extend_from_slice(&back[skip - front.len()..]);
+        }
+        out
+    }
+
     /// Toàn bộ cửa sổ hiện tại, liên tục trong bộ nhớ để đưa vào whisper.
     pub fn snapshot(&self) -> Vec<f32> {
-        self.samples.iter().copied().collect()
+        self.copy_from(0)
     }
 
     /// `secs` giây gần nhất. Dùng cho partial: decode lại cả cửa sổ 20–30 s
     /// mỗi giây là cách nhanh nhất để RTF vượt 1.
     pub fn tail(&self, secs: f32) -> Vec<f32> {
         let want = (self.sample_rate as f32 * secs).round() as usize;
-        let skip = self.samples.len().saturating_sub(want);
-        self.samples.iter().skip(skip).copied().collect()
+        self.copy_from(self.samples.len().saturating_sub(want))
     }
 
     /// Giữ lại `secs` giây cuối, bỏ phần trước đó. Dùng khi mở một lượt nói
@@ -74,11 +91,7 @@ impl AudioRingBuffer {
     /// trôi khỏi buffer thì lấy từ đầu buffer.
     pub fn slice_from_ms(&self, start_ms: i64) -> Vec<f32> {
         let wanted = (self.sample_rate as i64 * start_ms.max(0) / 1_000) as u64;
-        let skip = wanted.saturating_sub(self.dropped) as usize;
-        if skip >= self.samples.len() {
-            return Vec::new();
-        }
-        self.samples.iter().skip(skip).copied().collect()
+        self.copy_from(wanted.saturating_sub(self.dropped) as usize)
     }
 
     /// Mốc thời gian (ms, tính từ đầu lượt nói) của sample đầu tiên còn trong buffer.
@@ -132,6 +145,20 @@ mod tests {
         assert_eq!(buffer.slice_from_ms(0).len(), 16_000);
         // Mốc vượt quá dữ liệu -> rỗng.
         assert!(buffer.slice_from_ms(5_000).is_empty());
+    }
+
+    #[test]
+    fn copies_are_correct_when_the_deque_wraps_around() {
+        // Ép VecDeque wrap: đổ đầy rồi đẩy tiếp để con trỏ đầu chạy vòng.
+        let mut buffer = AudioRingBuffer::new(16_000, 1.0);
+        buffer.push(&vec![1.0; 16_000]);
+        buffer.push(&vec![2.0; 8_000]);
+        let snapshot = buffer.snapshot();
+        assert_eq!(snapshot.len(), 16_000);
+        assert_eq!(snapshot[0], 1.0);
+        assert_eq!(snapshot[8_000], 2.0);
+        let tail = buffer.tail(0.25);
+        assert!(tail.iter().all(|&sample| sample == 2.0));
     }
 
     #[test]

@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use audio_pipeline::{pcm_i16_le_to_f32, AudioResampler, TARGET_SAMPLE_RATE};
-use stream_engine::{Session, SessionConfig, StreamEvent, TranscriptUpdate};
+use stream_engine::{Session, SessionConfig, SessionHandle, StreamEvent, TranscriptUpdate};
 
 use crate::state::AppState;
 
@@ -72,7 +72,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: StreamParams)
     };
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(64);
-    let mut session = Session::new(
+    let session = Session::new(
         state.engines(params.language.as_deref()),
         state.new_probe(),
         event_tx,
@@ -84,6 +84,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: StreamParams)
         },
     );
     let session_id = session.id();
+    // VAD chạy đồng bộ trong Session — đưa cả Session sang blocking thread, vòng
+    // đọc WebSocket chỉ còn resample (sub-ms) và send qua channel.
+    let session = SessionHandle::spawn(session);
     tracing::info!(
         %session_id,
         sample_rate = params.sample_rate,
@@ -112,16 +115,16 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: StreamParams)
             Message::Binary(data) => {
                 let pcm = pcm_i16_le_to_f32(&data);
                 match resampler.push(&pcm) {
-                    Ok(pcm16k) => session.push_pcm(&pcm16k),
+                    Ok(pcm16k) => session.push_pcm(pcm16k).await,
                     Err(err) => tracing::warn!(%session_id, %err, "resample failed"),
                 }
             }
             Message::Text(text) => match serde_json::from_str::<ClientMessage>(text.as_str()) {
                 Ok(ClientMessage::Eos) => {
                     if let Ok(tail) = resampler.flush() {
-                        session.push_pcm(&tail);
+                        session.push_pcm(tail).await;
                     }
-                    session.finish();
+                    session.flush().await;
                 }
                 Err(err) => tracing::debug!(%session_id, %err, "ignoring unknown text frame"),
             },
@@ -131,12 +134,11 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: StreamParams)
     }
 
     if let Ok(tail) = resampler.flush() {
-        session.push_pcm(&tail);
+        session.push_pcm(tail).await;
     }
-    session.finish();
-    // Drop session để mọi Sender còn lại chỉ nằm trong các task inference đang
-    // chạy: khi chúng xong, channel đóng và `forward` tự kết thúc — không cần
-    // sleep đoán chừng. Timeout để một lượt inference treo không giữ socket mãi.
+    // Drop handle -> channel đóng -> task blocking finish() rồi drop Session: mọi
+    // Sender còn lại chỉ nằm trong các task inference đang chạy, chúng xong thì
+    // `forward` tự kết thúc. Timeout để một lượt inference treo không giữ socket mãi.
     drop(session);
     if tokio::time::timeout(FLUSH_TIMEOUT, forward).await.is_err() {
         tracing::warn!(%session_id, "timed out flushing pending results");

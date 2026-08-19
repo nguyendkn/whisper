@@ -4,7 +4,8 @@ use std::sync::Arc;
 use audio_pipeline::{EnergyVad, GateConfig, GatedProbe, SpeechProbe};
 use clap::Parser;
 use stream_engine::{
-    InferenceScheduler, Session, SessionConfig, SessionEngines, StreamEvent, ThreadBudget,
+    InferenceScheduler, Session, SessionConfig, SessionEngines, SessionHandle, StreamEvent,
+    ThreadBudget,
 };
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
@@ -220,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(64);
-    let mut session = Session::new(
+    let session = Session::new(
         engines,
         build_probe(&args)?,
         event_tx,
@@ -261,12 +262,13 @@ async fn main() -> anyhow::Result<()> {
         transcript
     });
 
+    let session = SessionHandle::spawn(session);
     match args.file.clone() {
-        Some(path) => audio_source::run_file(&mut session, &path, !args.no_realtime).await?,
-        None => audio_source::run_microphone(&mut session, 64).await?,
+        Some(path) => audio_source::run_file(&session, &path, !args.no_realtime).await?,
+        None => audio_source::run_microphone(&session, 64).await?,
     }
-    session.finish();
-    // Drop session -> hết Sender khi các task inference xong -> printer kết thúc.
+    // Drop handle -> task blocking finish() rồi drop Session -> hết Sender khi các
+    // task inference xong -> printer kết thúc.
     drop(session);
     let transcript = printer.await.unwrap_or_default();
     if !transcript.is_empty() {
