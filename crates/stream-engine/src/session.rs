@@ -7,6 +7,11 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 use whisper_core::{AsrError, DecodeMode};
 
+/// Log tình trạng session sau mỗi bấy nhiêu **giây audio** (không phải giây treo):
+/// với luồng realtime hai cái tương đương, còn khi nạp nhanh (test, chạy file) thì
+/// mốc theo thời gian treo sẽ không bao giờ tới và telemetry thành vô dụng.
+const HEARTBEAT_AUDIO_SECS: f32 = 5.0;
+
 use crate::{
     config::SessionConfig,
     error::EngineError,
@@ -69,6 +74,13 @@ pub struct Session {
     partial_inflight: Arc<AtomicBool>,
     last_partial_at: Instant,
     utterance: u64,
+    /// Nhịp log định kỳ: khi người dùng báo "không thấy transcript", ba con số
+    /// samples/biên độ/xác suất VAD nói ngay lỗi nằm ở đâu — không có audio, audio
+    /// im lặng, hay VAD không mở.
+    last_heartbeat_at: Instant,
+    samples_since_heartbeat: usize,
+    peak_since_heartbeat: f32,
+    max_prob_since_heartbeat: f32,
 }
 
 impl Session {
@@ -99,6 +111,10 @@ impl Session {
             partial_inflight: Arc::new(AtomicBool::new(false)),
             last_partial_at: Instant::now(),
             utterance: 0,
+            last_heartbeat_at: Instant::now(),
+            samples_since_heartbeat: 0,
+            peak_since_heartbeat: 0.0,
+            max_prob_since_heartbeat: 0.0,
         }
     }
 
@@ -122,6 +138,10 @@ impl Session {
         }
         self.buffer.push(pcm);
         self.probe_pending.extend_from_slice(pcm);
+        self.samples_since_heartbeat += pcm.len();
+        self.peak_since_heartbeat = pcm.iter().fold(self.peak_since_heartbeat, |peak, sample| {
+            peak.max(sample.abs())
+        });
 
         // VAD không theo kịp: bỏ phần chờ cũ nhất. Audio vẫn nằm trong ring buffer
         // nên nội dung không mất, chỉ mất độ chính xác của mốc cắt câu.
@@ -148,16 +168,42 @@ impl Session {
                 }
             };
             for prob in probs {
+                self.max_prob_since_heartbeat = self.max_prob_since_heartbeat.max(prob);
                 let event = self.gate.observe(prob);
                 self.handle_vad_event(event);
             }
         }
+
+        self.maybe_heartbeat();
 
         if self.buffer.duration_secs() >= self.config.max_utterance_secs {
             tracing::debug!(session_id = %self.id, "utterance hit the length cap, closing it");
             self.gate.force_end();
             self.close_utterance();
         }
+    }
+
+    /// Log tình trạng luồng vào sau mỗi `HEARTBEAT_AUDIO_SECS` giây audio.
+    fn maybe_heartbeat(&mut self) {
+        let audio_secs = self.samples_since_heartbeat as f32 / TARGET_SAMPLE_RATE as f32;
+        if audio_secs < HEARTBEAT_AUDIO_SECS {
+            return;
+        }
+        tracing::info!(
+            session_id = %self.id,
+            audio_secs,
+            wall_secs = self.last_heartbeat_at.elapsed().as_secs_f32(),
+            peak_amplitude = self.peak_since_heartbeat,
+            max_speech_prob = self.max_prob_since_heartbeat,
+            speaking = self.gate.is_speaking(),
+            buffered_secs = self.buffer.duration_secs(),
+            utterances = self.utterance,
+            "session heartbeat"
+        );
+        self.last_heartbeat_at = Instant::now();
+        self.samples_since_heartbeat = 0;
+        self.peak_since_heartbeat = 0.0;
+        self.max_prob_since_heartbeat = 0.0;
     }
 
     /// Chốt phần còn lại (client đóng kết nối, hoặc hết file).

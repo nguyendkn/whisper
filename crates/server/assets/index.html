@@ -80,6 +80,7 @@
       <span>lượt nói <b id="utterances">0</b></span>
       <span>gửi <b id="sent">0</b> KB</span>
       <span>mic <b id="rate">–</b></span>
+      <span>mức tín hiệu <b id="level">–</b></span>
     </div>
   </div>
 
@@ -212,13 +213,37 @@ async function start() {
 
   node = new AudioWorkletNode(audioCtx, 'pcm-pump');
   node.port.onmessage = (event) => {
+    const samples = event.data;
+    // Mức tín hiệu tính ngay tại client: nhìn vào đây là biết mic có thu được gì,
+    // khỏi phải đoán khi transcript trống.
+    let peak = 0;
+    for (let i = 0; i < samples.length; i += 8) {
+      const value = Math.abs(samples[i]);
+      if (value > peak) peak = value;
+    }
+    const db = peak > 0 ? 20 * Math.log10(peak / 32768) : -Infinity;
+    els.level.textContent = peak > 0 ? db.toFixed(0) + ' dB' : 'im lặng';
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(event.data);
-    bytesSent += event.data.byteLength;
+    ws.send(samples);
+    bytesSent += samples.byteLength;
     lastChunkAt = performance.now();
     els.sent.textContent = (bytesSent / 1024).toFixed(0);
   };
+
+  // Không có byte nào sau 2 s nghĩa là đồ thị audio không chạy — báo ngay thay vì
+  // để người dùng ngồi chờ một transcript không bao giờ tới.
+  setTimeout(() => {
+    if (running && bytesSent === 0) setStatus('mic không gửi được audio — kiểm tra quyền mic', 'err');
+  }, 2000);
+  // Web Audio là pull model: node KHÔNG nối tới destination thì Chrome không gọi
+  // process(), và không một byte audio nào được gửi đi. Nối qua gain 0 để đồ thị
+  // được "kéo" mà không phát ra loa (tránh vọng tiếng).
+  const silence = audioCtx.createGain();
+  silence.gain.value = 0;
   audioCtx.createMediaStreamSource(stream).connect(node);
+  node.connect(silence).connect(audioCtx.destination);
+  // Autoplay policy có thể để context ở trạng thái suspended.
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
 
   running = true;
   els.toggle.textContent = 'Dừng';
@@ -235,6 +260,7 @@ function stop() {
     setTimeout(() => ws && ws.close(), 1500);
   }
   if (node) { node.port.onmessage = null; node.disconnect(); node = null; }
+  els.level.textContent = '–';
   if (stream) { stream.getTracks().forEach((track) => track.stop()); stream = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   setStatus('đã dừng');

@@ -8,6 +8,10 @@
 //!   WHISPER_RT_TEST_LANG=en WHISPER_RT_TEST_EXPECT=country \
 //!   cargo test -p server --test ws_stream -- --nocapture
 //!
+//! Đặt `WHISPER_RT_TEST_URL=wss://host/v1/stream` để bắn vào một server đang chạy
+//! sẵn (ví dụ bản deploy thật) thay vì tự spawn binary — dùng để tách lỗi phía server
+//! khỏi lỗi phía browser.
+//!
 //! Thiếu biến thì test tự bỏ qua.
 
 use std::path::PathBuf;
@@ -30,10 +34,21 @@ async fn streams_a_wav_file_and_receives_a_final_transcript() {
         return;
     };
 
-    let mut server = spawn_server(&model);
-    wait_until_listening().await;
+    let remote = std::env::var("WHISPER_RT_TEST_URL").ok();
+    let mut server = match remote.as_deref() {
+        Some(url) => {
+            eprintln!("dùng server sẵn có: {url}");
+            None
+        }
+        None => {
+            let child = spawn_server(&model);
+            wait_until_listening().await;
+            Some(child)
+        }
+    };
 
-    let url = format!("ws://127.0.0.1:{PORT}/v1/stream?sample_rate=16000&channels=1");
+    let url = remote
+        .unwrap_or_else(|| format!("ws://127.0.0.1:{PORT}/v1/stream?sample_rate=16000&channels=1"));
     let (mut socket, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("kết nối websocket");
@@ -85,8 +100,10 @@ async fn streams_a_wav_file_and_receives_a_final_transcript() {
         }
     }
 
-    let _ = server.kill();
-    let _ = server.wait();
+    if let Some(server) = server.as_mut() {
+        let _ = server.kill();
+        let _ = server.wait();
+    }
     assert!(saw_ready, "không nhận được frame ready");
     assert!(
         finals.iter().any(|text| text.contains(&expected)),
