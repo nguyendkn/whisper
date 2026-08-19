@@ -19,6 +19,13 @@ pub struct ServerConfig {
     /// Model nhỏ chạy partial. Bỏ trống = dùng luôn model chính.
     #[serde(default)]
     pub partial_model: Option<ModelSettings>,
+    /// Model riêng theo ngôn ngữ, cho lượt `Final`.
+    ///
+    /// Cần thiết vì không có model nào thắng ở mọi thứ tiếng: đo trên FLEURS,
+    /// `large-v3` tốt hơn cho tiếng Anh (WER 3,90% so với 4,75%) nhưng **tệ hơn**
+    /// cho tiếng Việt (11,43% so với 9,39% của `large-v3-turbo`).
+    #[serde(default)]
+    pub language_models: Vec<LanguageModel>,
     /// Hạn mức song song riêng cho model partial.
     #[serde(default = "default_partial_concurrency")]
     pub max_concurrent_partial_inference: usize,
@@ -57,6 +64,14 @@ pub struct ModelSettings {
     /// Thu nhỏ encoder context cho lượt partial theo đúng độ dài cửa sổ.
     #[serde(default = "default_true")]
     pub scale_partial_audio_ctx: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LanguageModel {
+    /// Các mã ngôn ngữ dùng model này (ví dụ `["en"]`).
+    pub languages: Vec<String>,
+    #[serde(flatten)]
+    pub model: ModelSettings,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,6 +144,45 @@ impl ServerConfig {
             min_confidence: self.model.min_confidence,
             state_pool_size: self.max_concurrent_inference.max(1),
             scale_partial_audio_ctx: self.model.scale_partial_audio_ctx,
+            token_timestamps: self.session.local_agreement,
+        }
+    }
+
+    /// Config cho từng model theo ngôn ngữ: trả về (mã ngôn ngữ, config).
+    pub fn language_whisper_configs(&self) -> Vec<(Vec<String>, WhisperConfig)> {
+        self.language_models
+            .iter()
+            .map(|entry| {
+                let mut config = self.model_settings_to_config(&entry.model);
+                // Model đã gắn với một ngôn ngữ cụ thể thì ép luôn ngôn ngữ đó, khỏi
+                // phải auto-detect.
+                config.language =
+                    opt(&entry.model.language).or_else(|| entry.languages.first().cloned());
+                (entry.languages.clone(), config)
+            })
+            .collect()
+    }
+
+    fn model_settings_to_config(&self, model: &ModelSettings) -> WhisperConfig {
+        WhisperConfig {
+            model_path: model.path.clone(),
+            language: opt(&model.language),
+            n_threads: model.n_threads,
+            translate: false,
+            beam_size: (model.beam_size > 1).then_some(model.beam_size),
+            temperature: 0.0,
+            temperature_inc: model.temperature_inc,
+            entropy_thold: 2.4,
+            logprob_thold: -1.0,
+            use_gpu: model.use_gpu,
+            gpu_device: model.gpu_device,
+            flash_attn: model.flash_attn,
+            initial_prompt: opt(&model.initial_prompt),
+            min_audio_ms: model.min_audio_ms,
+            no_speech_thold: model.no_speech_thold,
+            min_confidence: model.min_confidence,
+            state_pool_size: self.max_concurrent_inference.max(1),
+            scale_partial_audio_ctx: model.scale_partial_audio_ctx,
             token_timestamps: self.session.local_agreement,
         }
     }

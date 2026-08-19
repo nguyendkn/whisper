@@ -32,6 +32,9 @@ pub struct StreamParams {
     sample_rate: u32,
     #[serde(default = "default_channels")]
     channels: usize,
+    /// Mã ngôn ngữ để chọn model (`?language=en`). Bỏ trống = model mặc định.
+    #[serde(default)]
+    language: Option<String>,
 }
 
 fn default_sample_rate() -> u32 {
@@ -70,7 +73,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: StreamParams)
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(64);
     let mut session = Session::new(
-        state.engines(),
+        state.engines(params.language.as_deref()),
         state.new_probe(),
         event_tx,
         state.cfg.session_config(),
@@ -80,6 +83,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: StreamParams)
         %session_id,
         sample_rate = params.sample_rate,
         channels = params.channels,
+        language = params.language.as_deref().unwrap_or("<mặc định>"),
         "streaming session opened"
     );
 

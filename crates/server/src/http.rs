@@ -17,6 +17,7 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
         "threads_available": state.scheduler.available_permits(),
         "max_concurrent_inference": state.scheduler.max_concurrent(),
         "partial_model": state.partial_scheduler.is_some(),
+        "language_models": state.language_schedulers.keys().collect::<Vec<_>>(),
     }))
 }
 

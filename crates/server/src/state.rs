@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use audio_pipeline::{EnergyVad, GatedProbe, SpeechProbe};
@@ -11,6 +12,9 @@ pub struct AppState {
     pub scheduler: Arc<InferenceScheduler>,
     /// Scheduler riêng cho partial nếu config khai báo `[partial_model]`.
     pub partial_scheduler: Option<Arc<InferenceScheduler>>,
+    /// Model riêng theo ngôn ngữ cho lượt Final; ngôn ngữ không có trong map thì
+    /// dùng model chính.
+    pub language_schedulers: Arc<HashMap<String, Arc<InferenceScheduler>>>,
     pub cfg: Arc<ServerConfig>,
 }
 
@@ -44,8 +48,24 @@ impl AppState {
             None => None,
         };
 
+        // Model theo ngôn ngữ: không model nào thắng ở mọi thứ tiếng, nên cho phép
+        // khai báo riêng và định tuyến theo `?language=` của session.
+        let mut language_schedulers: HashMap<String, Arc<InferenceScheduler>> = HashMap::new();
+        for (languages, whisper_cfg) in cfg.language_whisper_configs() {
+            let model = Arc::new(WhisperModel::load(whisper_cfg)?);
+            let scheduler = Arc::new(InferenceScheduler::with_budget(
+                model,
+                Arc::clone(&budget),
+                cfg.max_concurrent_inference,
+            ));
+            for language in languages {
+                language_schedulers.insert(language.to_lowercase(), Arc::clone(&scheduler));
+            }
+        }
+
         tracing::info!(
             cpu_thread_budget = budget.total(),
+            language_models = language_schedulers.len(),
             partial_model = partial_scheduler.is_some(),
             "inference budget ready"
         );
@@ -53,13 +73,20 @@ impl AppState {
         Ok(Self {
             scheduler,
             partial_scheduler,
+            language_schedulers: Arc::new(language_schedulers),
             cfg: Arc::new(cfg),
         })
     }
 
-    pub fn engines(&self) -> SessionEngines {
+    /// Model cho một session. `language` lấy từ query của client; không khai báo
+    /// riêng thì dùng model chính.
+    pub fn engines(&self, language: Option<&str>) -> SessionEngines {
+        let finals = language
+            .map(str::to_lowercase)
+            .and_then(|language| self.language_schedulers.get(&language).cloned())
+            .unwrap_or_else(|| Arc::clone(&self.scheduler));
         SessionEngines {
-            finals: Arc::clone(&self.scheduler),
+            finals,
             partials: self.partial_scheduler.clone(),
         }
     }

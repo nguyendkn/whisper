@@ -74,7 +74,8 @@ văn + segment:
 curl --data-binary @mau.wav http://127.0.0.1:8080/v1/transcribe
 ```
 
-`GET /v1/stream?sample_rate=48000&channels=1` — WebSocket:
+`GET /v1/stream?sample_rate=48000&channels=1&language=vi` — WebSocket
+(`language` chọn model đã khai báo trong `[[language_models]]`, bỏ trống thì dùng model chính):
 
 - client gửi **binary frame** = PCM i16 little-endian ở sample rate đã khai báo
   (mặc định 16 kHz mono; khai báo khác thì server tự resample);
@@ -203,6 +204,56 @@ dữ liệu train (kiểu lời chào kênh YouTube). Đo trên mẫu 128 s bằ
 token (`WhisperConfig::token_timestamps`, chỉ bật cho Partial). Cửa sổ partial bắt đầu từ mốc
 đã chốt (`AudioRingBuffer::slice_from_ms`) nên không decode lại phần đã xong. Event partial trả
 thêm `stable_text` — phần đã chốt, client render chữ chắc; phần còn lại render chữ mờ.
+
+### WER thật trên FLEURS: chọn model theo ngôn ngữ
+
+Bộ eval: [FLEURS](https://huggingface.co/datasets/google/fleurs) (Google, CC-BY 4.0), 30 clip mỗi
+thứ tiếng — tiếng Anh 590 từ / 257 s, tiếng Việt 831 từ / 341 s. Tải bằng
+`./scripts/fetch_eval_set.sh`, chạy bằng `whisper-rt --eval-manifest eval/vi.tsv`. WER tính trên
+toàn corpus (tổng lỗi / tổng từ), 12 thread, CPU-only.
+
+**Tiếng Anh**
+
+| Model | Cấu hình | WER | RTF |
+|---|---|---|---|
+| large-v3 | beam 5 | **3,90%** | 1,26 |
+| large-v3-turbo | greedy | 4,58% | 0,99 |
+| large-v3-turbo | beam 5 | 4,75% | 0,97 |
+| large-v3-turbo | temp fallback | 4,75% | 1,01 |
+| base | beam 5 | 8,14% | 0,06 |
+
+**Tiếng Việt**
+
+| Model | Cấu hình | WER | RTF |
+|---|---|---|---|
+| large-v3-turbo | beam 5 | **9,39%** | 0,79 |
+| large-v3-turbo | temp fallback | 9,39% | 0,80 |
+| large-v3-turbo | greedy | 10,23% | 0,79 |
+| large-v3 | beam 5 | 11,43% | 1,11 |
+| PhoWhisper-medium | beam 5 | 14,32% | 0,60 |
+| PhoWhisper-small | beam 5 | 16,37% | 0,20 |
+| PhoWhisper-medium | greedy | 25,99% | 0,56 |
+| base | beam 5 | 42,24% | 0,07 |
+
+Ba kết luận:
+
+1. **Không có model nào thắng cả hai thứ tiếng.** `large-v3` hơn `turbo` 18% tương đối ở tiếng Anh
+   nhưng kém 21% tương đối ở tiếng Việt. Vì thế server có `[[language_models]]`: khai báo model
+   riêng cho từng ngôn ngữ, session chọn qua `?language=`. Muốn chính xác nhất cho cả hai thì chạy
+   `en → large-v3`, `vi → turbo` (đổi lại RAM cho cả hai bản weights).
+2. **Beam 5 giúp tiếng Việt (10,23% → 9,39%) nhưng là nước rửa với tiếng Anh** (4,58% vs 4,75% —
+   lệch một lỗi trên 590 từ). Giữ mặc định beam 5 vì nó còn chống mất nội dung ở utterance dài
+   (xem mục dưới), thứ mà bộ eval clip ngắn này không đo được.
+3. **Fine-tune tiếng Việt không tự động thắng.** Hai bản ggml của PhoWhisper (VinAI, cộng đồng
+   convert) đều tệ hơn turbo trên FLEURS, và lỗi tập trung ở **insertion** (52–54 lần) — dấu hiệu
+   khác biệt quy ước chuẩn hoá text hơn là nghe sai. Kết quả này chỉ nói về FLEURS + cách chuẩn hoá
+   của tôi; muốn phán xét công bằng cần đo thêm trên VIVOS/VLSP là những bộ mà PhoWhisper nhắm tới.
+
+Hạn chế cần biết khi đọc bảng: 30 clip cho độ chính xác khoảng ±2 điểm phần trăm, nên chênh lệch
+dưới ~2 điểm (như beam vs greedy ở tiếng Anh) là nhiễu. Số viết bằng chữ so với viết bằng số cũng
+bị tính là lỗi vì tôi không chuẩn hoá số — điều này thổi WER lên đều nhau ở mọi cấu hình nên không
+ảnh hưởng phép so sánh. `large-v3` có RTF 1,26 nên **không kịp realtime trên CPU máy này**: muốn
+độ chính xác đó cho tiếng Anh thì cần GPU, hoặc dùng nó cho lượt Final trong khi partial chạy model nhỏ.
 
 ### Thực nghiệm: cấu hình decode nào thực sự làm tăng độ chính xác
 

@@ -12,6 +12,7 @@ use whisper_core::{WhisperConfig, WhisperModel};
 
 mod audio_source;
 mod bench;
+mod eval;
 mod wer;
 
 /// Test local: mic hoặc file audio -> transcript trên terminal.
@@ -71,6 +72,12 @@ struct Args {
     /// tham chiếu "oracle" để đo phần chất lượng mất đi do streaming.
     #[arg(long)]
     offline: bool,
+    /// Chạy cả bộ eval: file TSV mỗi dòng `audio<TAB>text tham chiếu`.
+    #[arg(long)]
+    eval_manifest: Option<PathBuf>,
+    /// In WER từng clip khi chạy eval.
+    #[arg(long)]
+    eval_verbose: bool,
     /// So transcript với file reference và in WER.
     #[arg(long)]
     wer: Option<PathBuf>,
@@ -156,6 +163,10 @@ async fn main() -> anyhow::Result<()> {
         finals: Arc::clone(&scheduler),
         partials: partial_scheduler,
     };
+
+    if let Some(manifest) = args.eval_manifest.as_deref() {
+        return eval::run(scheduler, manifest, args.eval_verbose).await;
+    }
 
     if args.offline {
         let path = args
