@@ -11,12 +11,18 @@ LANG_CODE="${3:?cần mã ngôn ngữ}"
 BIN="${BIN:-./target/release/whisper-rt}"
 THREADS="${THREADS:-12}"
 
+# LOG_DIR: nơi lưu kết quả từng clip (để tính khoảng tin cậy bootstrap sau).
+LOG_DIR="${LOG_DIR:-}"
+
 run() {
   local name="$1"; shift
-  local line
-  line=$("$BIN" --eval-manifest "$MANIFEST" --model "$MODEL" --language "$LANG_CODE" \
-    --threads "$THREADS" "$@" 2>/dev/null | grep '^EVAL' || true)
-  echo "RESULT $LANG_CODE $(basename "$MODEL" .bin) $name ${line:-EVAL failed}"
+  local tag="$LANG_CODE-$(basename "$MODEL" .bin)-$name"
+  local out="${LOG_DIR:+$LOG_DIR/$tag.log}"
+  local raw
+  raw=$("$BIN" --eval-manifest "$MANIFEST" --model "$MODEL" --language "$LANG_CODE" \
+    --threads "$THREADS" --eval-verbose "$@" 2>/dev/null)
+  [[ -n "$out" ]] && printf '%s\n' "$raw" >"$out"
+  echo "RESULT $LANG_CODE $(basename "$MODEL" .bin) $name $(printf '%s\n' "$raw" | grep '^EVAL' || echo 'EVAL failed')"
 }
 
 # CASES cho phép chọn tập cấu hình: "beam5 greedy temp-fallback beam8"

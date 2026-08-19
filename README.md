@@ -207,53 +207,56 @@ thêm `stable_text` — phần đã chốt, client render chữ chắc; phần c
 
 ### WER thật trên FLEURS: chọn model theo ngôn ngữ
 
-Bộ eval: [FLEURS](https://huggingface.co/datasets/google/fleurs) (Google, CC-BY 4.0), 30 clip mỗi
-thứ tiếng — tiếng Anh 590 từ / 257 s, tiếng Việt 831 từ / 341 s. Tải bằng
-`./scripts/fetch_eval_set.sh`, chạy bằng `whisper-rt --eval-manifest eval/vi.tsv`. WER tính trên
-toàn corpus (tổng lỗi / tổng từ), 12 thread, CPU-only.
+Bộ eval: [FLEURS](https://huggingface.co/datasets/google/fleurs) (Google, CC-BY 4.0), **100 clip
+mỗi thứ tiếng** — tiếng Anh 2 094 từ / 857 s, tiếng Việt 2 759 từ / 1 147 s. Tải bằng
+`./scripts/fetch_eval_set.sh "en_us:en vi_vn:vi" 100`, chạy bằng `whisper-rt --eval-manifest`,
+quét bằng `./scripts/eval_matrix.sh`. WER tính trên toàn corpus (tổng lỗi / tổng từ), 12 thread,
+CPU-only. Khoảng tin cậy và kiểm định lấy từ `./scripts/wer_ci.py` (bootstrap **theo clip**, vì
+clip là đơn vị độc lập còn các từ trong một clip thì tương quan).
 
-**Tiếng Anh**
+| Ngôn ngữ | Model | Cấu hình | WER | KTC 95% | RTF |
+|---|---|---|---|---|---|
+| en | large-v3 | beam 5 | **5,01%** | [3,76 – 6,37] | 1,20 |
+| en | large-v3-turbo | beam 5 | 6,11% | [4,39 – 8,07] | 0,95 |
+| vi | large-v3 | beam 5 | 9,53% | [7,34 – 12,08] | 1,10 |
+| vi | large-v3-turbo | beam 5 | **9,60%** | [7,82 – 11,60] | 0,80 |
+| vi | large-v3-turbo | greedy | 9,86% | [7,98 – 11,97] | 0,78 |
 
-| Model | Cấu hình | WER | RTF |
+So sánh theo cặp trên cùng 100 clip (nhạy hơn nhiều so với việc đối chiếu hai KTC rời):
+
+| So sánh | Chênh lệch | KTC 95% | Kết luận |
 |---|---|---|---|
-| large-v3 | beam 5 | **3,90%** | 1,26 |
-| large-v3-turbo | greedy | 4,58% | 0,99 |
-| large-v3-turbo | beam 5 | 4,75% | 0,97 |
-| large-v3-turbo | temp fallback | 4,75% | 1,01 |
-| base | beam 5 | 8,14% | 0,06 |
+| en: turbo so với large-v3 | +1,10 điểm | [+0,05, +2,36] | **có thật** (p≈0,047) |
+| vi: turbo so với large-v3 | +0,07 điểm | [−1,84, +1,48] | không kết luận được (p≈0,86) |
+| vi: greedy so với beam 5 | +0,25 điểm | [−0,07, +0,61] | không kết luận được (p≈0,17) |
 
-**Tiếng Việt**
+Ba kết luận, và **một kết luận cũ bị bác bỏ**:
 
-| Model | Cấu hình | WER | RTF |
-|---|---|---|---|
-| large-v3-turbo | beam 5 | **9,39%** | 0,79 |
-| large-v3-turbo | temp fallback | 9,39% | 0,80 |
-| large-v3-turbo | greedy | 10,23% | 0,79 |
-| large-v3 | beam 5 | 11,43% | 1,11 |
-| PhoWhisper-medium | beam 5 | 14,32% | 0,60 |
-| PhoWhisper-small | beam 5 | 16,37% | 0,20 |
-| PhoWhisper-medium | greedy | 25,99% | 0,56 |
-| base | beam 5 | 42,24% | 0,07 |
+1. **Tiếng Anh: `large-v3` thật sự hơn `turbo`** — 18% tương đối, và phép kiểm định theo cặp xác
+   nhận (dù chỉ vừa đủ ngưỡng). Giá: RTF 1,20 so với 0,95, tức **không kịp realtime trên CPU máy
+   này**; muốn độ chính xác đó thì cần GPU, hoặc dùng nó cho lượt Final trong khi partial chạy model
+   nhỏ (hạ tầng dual-model đã có).
+2. **Tiếng Việt: hai model tương đương** (9,53% vs 9,60%, p≈0,86) ⇒ chọn `turbo` vì nhẹ hơn một
+   nửa RAM và nhanh hơn 1,4×. Trên bộ 30 clip trước đó tôi đo `large-v3` **tệ hơn 21% tương đối**
+   ở tiếng Việt và đã kết luận như vậy — với 100 clip thì khoảng cách đó biến mất, tức kết luận cũ
+   là **nhiễu do bộ eval quá nhỏ**, không phải tính chất của model.
+3. **beam 5 so với greedy: không đo được khác biệt trên clip ngắn** ở cả hai thứ tiếng (bộ 30 clip
+   từng cho tiếng Việt −8% tương đối, cũng không trụ được). Vẫn giữ mặc định beam 5 vì lý do khác,
+   đã đo riêng: greedy làm **mất hẳn nội dung** ở utterance dài (182 xoá / 0 thêm — xem mục dưới),
+   thứ mà bộ clip 10 giây này không chạm tới.
+4. `[[language_models]]` vẫn đáng dùng, nhưng vì lý do đã đổi: **để tiếng Anh dùng large-v3**, chứ
+   không phải để tránh large-v3 cho tiếng Việt.
 
-Ba kết luận:
+Một lỗi trong chính bộ eval, đã sửa và nên biết nếu bạn tự dựng: FLEURS có **nhiều bản ghi cho
+cùng một `id` câu**. Bản đầu của `fetch_eval_set.sh` đặt tên file theo `id` nên bản ghi sau ghi đè
+bản trước, trong khi manifest vẫn giữ đủ dòng — nhiều dòng trỏ vào cùng một file với transcript
+khác nhau, và WER bị thổi lên. Tên file bây giờ có kèm chỉ số dòng.
 
-1. **Không có model nào thắng cả hai thứ tiếng.** `large-v3` hơn `turbo` 18% tương đối ở tiếng Anh
-   nhưng kém 21% tương đối ở tiếng Việt. Vì thế server có `[[language_models]]`: khai báo model
-   riêng cho từng ngôn ngữ, session chọn qua `?language=`. Muốn chính xác nhất cho cả hai thì chạy
-   `en → large-v3`, `vi → turbo` (đổi lại RAM cho cả hai bản weights).
-2. **Beam 5 giúp tiếng Việt (10,23% → 9,39%) nhưng là nước rửa với tiếng Anh** (4,58% vs 4,75% —
-   lệch một lỗi trên 590 từ). Giữ mặc định beam 5 vì nó còn chống mất nội dung ở utterance dài
-   (xem mục dưới), thứ mà bộ eval clip ngắn này không đo được.
-3. **Fine-tune tiếng Việt không tự động thắng.** Hai bản ggml của PhoWhisper (VinAI, cộng đồng
-   convert) đều tệ hơn turbo trên FLEURS, và lỗi tập trung ở **insertion** (52–54 lần) — dấu hiệu
-   khác biệt quy ước chuẩn hoá text hơn là nghe sai. Kết quả này chỉ nói về FLEURS + cách chuẩn hoá
-   của tôi; muốn phán xét công bằng cần đo thêm trên VIVOS/VLSP là những bộ mà PhoWhisper nhắm tới.
-
-Hạn chế cần biết khi đọc bảng: 30 clip cho độ chính xác khoảng ±2 điểm phần trăm, nên chênh lệch
-dưới ~2 điểm (như beam vs greedy ở tiếng Anh) là nhiễu. Số viết bằng chữ so với viết bằng số cũng
-bị tính là lỗi vì tôi không chuẩn hoá số — điều này thổi WER lên đều nhau ở mọi cấu hình nên không
-ảnh hưởng phép so sánh. `large-v3` có RTF 1,26 nên **không kịp realtime trên CPU máy này**: muốn
-độ chính xác đó cho tiếng Anh thì cần GPU, hoặc dùng nó cho lượt Final trong khi partial chạy model nhỏ.
+Vẫn còn hạn chế: KTC rộng khoảng ±1,3–2 điểm phần trăm dù đã 100 clip, nên chênh lệch dưới ~1,5
+điểm chỉ giải quyết được bằng kiểm định theo cặp. Tôi không chuẩn hoá số (chữ so với chữ số) nên
+WER tuyệt đối cao hơn thực tế, đều nhau ở mọi cấu hình. PhoWhisper chỉ được đo trên bộ 30 clip
+(14,32% / 16,37%) nên xếp vào diện **chưa kết luận**; muốn phán xét công bằng phải đo trên
+VIVOS/VLSP là những bộ nó nhắm tới.
 
 ### Thực nghiệm: cấu hình decode nào thực sự làm tăng độ chính xác
 

@@ -61,9 +61,10 @@ no_speech_thold = 0.6
 # max_concurrent_partial_inference = 1
 
 # Model riêng theo ngôn ngữ cho lượt Final, chọn qua `?language=` của WebSocket.
-# Đo trên FLEURS (30 clip/thứ tiếng, xem README): không model nào thắng cả hai —
-# large-v3 tốt hơn cho tiếng Anh (3,90% so với 4,75%) nhưng TỆ HƠN cho tiếng Việt
-# (11,43% so với 9,39%). Bật cả hai thì tốn RAM cho cả hai bản weights.
+# Đo trên FLEURS 100 clip/thứ tiếng (xem README): large-v3 hơn turbo ở tiếng Anh
+# (5,01% so với 6,11%, kiểm định theo cặp p≈0,047) nhưng ở tiếng Việt hai model
+# tương đương (9,53% so với 9,60%, p≈0,86) nên tiếng Việt dùng turbo cho nhẹ.
+# Bật cả hai thì tốn RAM cho cả hai bản weights (~4,5 GB).
 # [[language_models]]
 # languages = ["en"]
 # path = "models/ggml-large-v3.bin"

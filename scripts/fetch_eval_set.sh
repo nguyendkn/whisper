@@ -31,9 +31,13 @@ raw = subprocess.run(["curl", "-sS", "--max-time", "120", url], capture_output=T
 rows = json.loads(raw).get("rows", [])
 
 lines, audio_secs = [], 0
-for entry in rows:
+# FLEURS có NHIỀU bản ghi cho cùng một `id` câu (nhiều người đọc). Đặt tên file theo
+# `id` thì bản sau ghi đè bản trước, mà manifest vẫn giữ đủ dòng -> nhiều dòng trỏ vào
+# cùng một file với transcript khác nhau, WER bị thổi lên. Vì vậy tên file phải kèm
+# thứ tự dòng.
+for index, entry in enumerate(rows):
     row = entry["row"]
-    dest = os.path.join(out_dir, "audio", f'{config}-{row["id"]}.wav')
+    dest = os.path.join(out_dir, "audio", f'{config}-{index:03d}-{row["id"]}.wav')
     if not os.path.exists(dest) or os.path.getsize(dest) < 2_000:
         subprocess.run(["curl", "-sSL", "--max-time", "90", "-o", dest, row["audio"][0]["src"]], check=False)
     if not os.path.exists(dest) or os.path.getsize(dest) < 2_000:
