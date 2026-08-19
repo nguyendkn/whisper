@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -72,6 +72,11 @@ pub struct Session {
     /// đẩy mốc này lên mỗi khi chốt thêm từ.
     partial_start_ms: Arc<AtomicI64>,
     partial_inflight: Arc<AtomicBool>,
+    /// Utterance đang mở — task decode giữ bản sao lúc spawn; nếu lúc hoàn thành số
+    /// này đã nhảy (Final đã đóng utterance) thì kết quả partial là đồ cũ: áp vào
+    /// agreement mới sẽ bơm từ với mốc thời gian của utterance trước, và client sẽ
+    /// thấy partial hiện ra SAU final của chính câu đó.
+    current_utterance: Arc<AtomicU64>,
     last_partial_at: Instant,
     utterance: u64,
     /// Nhịp log định kỳ: khi người dùng báo "không thấy transcript", ba con số
@@ -109,6 +114,7 @@ impl Session {
             agreement: Arc::new(Mutex::new(LocalAgreement::new())),
             partial_start_ms: Arc::new(AtomicI64::new(0)),
             partial_inflight: Arc::new(AtomicBool::new(false)),
+            current_utterance: Arc::new(AtomicU64::new(0)),
             last_partial_at: Instant::now(),
             utterance: 0,
             last_heartbeat_at: Instant::now(),
@@ -271,8 +277,7 @@ impl Session {
         // trượt cửa sổ về đuôi và bỏ giao kèo cũ, nếu không cửa sổ phình mãi.
         if pcm.len() > max_samples {
             pcm = self.buffer.tail(self.config.partial_window_secs);
-            start_ms = self.buffer.duration_secs() as i64 * 1_000 + self.buffer.start_ms()
-                - (self.config.partial_window_secs * 1_000.0) as i64;
+            start_ms = self.buffer.end_ms() - (self.config.partial_window_secs * 1_000.0) as i64;
             self.partial_start_ms
                 .store(start_ms.max(0), Ordering::Release);
             self.agreement.lock().expect("agreement poisoned").slide();
@@ -289,6 +294,8 @@ impl Session {
         self.buffer.clear();
         let utterance = self.utterance;
         self.utterance += 1;
+        self.current_utterance
+            .store(self.utterance, Ordering::Release);
         let prompt = self.previous_text_prompt();
         self.agreement.lock().expect("agreement poisoned").reset();
         self.partial_start_ms.store(0, Ordering::Release);
@@ -334,12 +341,19 @@ impl Session {
         let partial_start_ms = Arc::clone(&self.partial_start_ms);
         let use_agreement = self.config.local_agreement && window_start_ms >= 0;
         let language = self.config.language.clone();
+        let current_utterance = Arc::clone(&self.current_utterance);
         let session_id = self.id;
 
         tokio::spawn(async move {
             let outcome = scheduler.submit(pcm, mode, prompt, language).await;
             if mode == DecodeMode::Partial {
                 inflight.store(false, Ordering::Release);
+                // Utterance đã bị Final đóng trong lúc decode: kết quả này thuộc về
+                // câu trước, áp vào agreement mới hay gửi ra client đều sai.
+                if current_utterance.load(Ordering::Acquire) != utterance {
+                    tracing::debug!(session_id = %session_id, utterance, "bỏ partial về muộn hơn final");
+                    return;
+                }
             }
 
             let event = match outcome {

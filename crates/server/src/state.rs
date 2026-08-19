@@ -78,6 +78,34 @@ impl AppState {
         })
     }
 
+    /// Cấp phát trước KV cache + graph của từng model bằng một lượt decode im lặng
+    /// ngắn (Partial + audio_ctx thu nhỏ nên rẻ). Không có bước này, NGƯỜI DÙNG ĐẦU
+    /// TIÊN trả giá: lượt inference đầu của mỗi model gánh vài trăm MB cấp phát.
+    pub fn spawn_warmup(&self) {
+        let mut schedulers = vec![Arc::clone(&self.scheduler)];
+        schedulers.extend(self.partial_scheduler.iter().cloned());
+        schedulers.extend(self.language_schedulers.values().cloned());
+        // Nhiều ngôn ngữ có thể trỏ chung một scheduler.
+        schedulers.dedup_by(|a, b| Arc::ptr_eq(a, b));
+
+        for scheduler in schedulers {
+            tokio::spawn(async move {
+                let silence = vec![0.0f32; whisper_core::WHISPER_SAMPLE_RATE as usize * 13 / 10];
+                let started = std::time::Instant::now();
+                match scheduler
+                    .submit(silence, whisper_core::DecodeMode::Partial, None, None)
+                    .await
+                {
+                    Ok(_) => tracing::info!(
+                        warmup_ms = started.elapsed().as_millis() as u64,
+                        "model warmed up"
+                    ),
+                    Err(err) => tracing::warn!(%err, "warmup failed"),
+                }
+            });
+        }
+    }
+
     /// Model cho một session. `language` lấy từ query của client; không khai báo
     /// riêng thì dùng model chính.
     pub fn engines(&self, language: Option<&str>) -> SessionEngines {

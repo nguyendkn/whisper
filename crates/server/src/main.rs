@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use tracing_subscriber::EnvFilter;
@@ -34,11 +35,14 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let state = AppState::init(cfg)?;
+    state.spawn_warmup();
     let app = Router::new()
         .route("/", get(http::index))
         .route("/health", get(http::health))
         .route("/v1/transcribe", post(http::transcribe))
         .route("/v1/stream", get(ws::stream_handler))
+        // Mặc định của axum là 2 MB — một file WAV hơn 60 s đã vượt.
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;

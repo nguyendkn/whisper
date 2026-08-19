@@ -1,9 +1,10 @@
 use audio_pipeline::decode_bytes_to_16k_mono;
 use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::Html;
 use axum::Json;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use whisper_core::DecodeMode;
 
@@ -11,8 +12,13 @@ use crate::state::AppState;
 
 /// UI transcript realtime. Nhúng thẳng vào binary để deploy chỉ cần một file, và
 /// không có tài nguyên ngoài nào (CDN) — trang phải chạy được trong mạng nội bộ.
-pub async fn index() -> Html<&'static str> {
-    Html(include_str!("../assets/index.html"))
+/// `no-cache`: browser phải revalidate mỗi lần — một bản JS cũ nằm trong cache là
+/// một buổi debug "nói mà không thấy chữ" (đã xảy ra thật).
+pub async fn index() -> ([(header::HeaderName, &'static str); 1], Html<&'static str>) {
+    (
+        [(header::CACHE_CONTROL, "no-cache")],
+        Html(include_str!("../assets/index.html")),
+    )
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<Value> {
@@ -30,15 +36,27 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
 
 /// Batch: POST một file audio (mp3, wav, flac, ogg, m4a — sample rate/số kênh nào
 /// cũng được) trong body, nhận lại toàn văn kèm segment.
+#[derive(Debug, Deserialize)]
+pub struct TranscribeParams {
+    /// `?language=vi` — bỏ trống thì auto-detect (tốn thêm một lượt decode).
+    #[serde(default)]
+    language: Option<String>,
+}
+
 pub async fn transcribe(
     State(state): State<AppState>,
+    Query(params): Query<TranscribeParams>,
     body: Bytes,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let pcm =
-        decode_bytes_to_16k_mono(body.to_vec()).map_err(|err| bad_request(&err.to_string()))?;
+    // Giải mã mp3/flac là CPU-bound hàng giây với file dài — không được chạy trên
+    // reactor của tokio, nếu không mọi kết nối khác cùng khựng.
+    let pcm = tokio::task::spawn_blocking(move || decode_bytes_to_16k_mono(body.to_vec()))
+        .await
+        .map_err(|err| bad_request(&err.to_string()))?
+        .map_err(|err| bad_request(&err.to_string()))?;
     let result = state
         .scheduler
-        .submit(pcm, DecodeMode::Final, None, None)
+        .submit(pcm, DecodeMode::Final, None, params.language)
         .await
         .map_err(|err| {
             (

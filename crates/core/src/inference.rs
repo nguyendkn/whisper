@@ -8,6 +8,20 @@ use crate::{
     model::WhisperModel,
 };
 
+/// whisper.cpp từ chối input dưới 1 s, nhưng một câu thoại thật ("alo", "dạ") hoàn
+/// toàn ngắn hơn thế — Final ngắn được pad im lặng lên mức này thay vì bị bỏ.
+const FINAL_PAD_TARGET_MS: u32 = 1_100;
+/// Dưới mức này gần như chắc chắn là click/noise, pad cũng chỉ ra ảo giác — bỏ.
+const FINAL_MIN_MS: u32 = 250;
+
+/// Pad im lặng vào cuối cho đủ `FINAL_PAD_TARGET_MS`.
+fn pad_final_audio(pcm: &[f32]) -> Vec<f32> {
+    let target = (WHISPER_SAMPLE_RATE as u64 * FINAL_PAD_TARGET_MS as u64 / 1_000) as usize;
+    let mut padded = pcm.to_vec();
+    padded.resize(target.max(pcm.len()), 0.0);
+    padded
+}
+
 /// Chế độ decode. Partial ưu tiên độ trễ, Final ưu tiên chất lượng.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeMode {
@@ -87,12 +101,29 @@ pub fn transcribe(
 ) -> Result<TranscriptResult, AsrError> {
     let config = model.config();
     let audio_ms = (pcm.len() as u64 * 1_000 / WHISPER_SAMPLE_RATE as u64) as u32;
-    if pcm.len() < config.min_samples() {
-        return Err(AsrError::AudioTooShort {
-            got_ms: audio_ms,
-            min_ms: config.min_audio_ms,
-        });
-    }
+    // Partial giữ ngưỡng cấu hình (cửa sổ ngắn không đáng một lượt encode); Final
+    // thì pad — bỏ một câu người dùng THẬT SỰ nói ra là lỗi tệ hơn nhiều so với
+    // tốn một lượt decode.
+    let padded;
+    let pcm: &[f32] = match mode {
+        DecodeMode::Final if audio_ms < FINAL_MIN_MS => {
+            return Err(AsrError::AudioTooShort {
+                got_ms: audio_ms,
+                min_ms: FINAL_MIN_MS,
+            });
+        }
+        DecodeMode::Final if audio_ms < FINAL_PAD_TARGET_MS => {
+            padded = pad_final_audio(pcm);
+            &padded
+        }
+        DecodeMode::Partial if pcm.len() < config.min_samples() => {
+            return Err(AsrError::AudioTooShort {
+                got_ms: audio_ms,
+                min_ms: config.min_audio_ms,
+            });
+        }
+        _ => pcm,
+    };
 
     let params = build_params(config, mode, pcm.len(), prompt, language);
     let started = Instant::now();
@@ -269,4 +300,24 @@ fn build_params<'a>(
         params.set_initial_prompt(prompt);
     }
     params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_final_audio_is_padded_to_the_target() {
+        let pcm = vec![0.5f32; 8_000]; // 0,5 s
+        let padded = pad_final_audio(&pcm);
+        assert_eq!(padded.len(), 17_600); // 1,1 s @ 16 kHz
+        assert_eq!(padded[7_999], 0.5);
+        assert_eq!(padded[8_000], 0.0);
+    }
+
+    #[test]
+    fn long_final_audio_is_left_untouched() {
+        let pcm = vec![0.1f32; 32_000];
+        assert_eq!(pad_final_audio(&pcm).len(), 32_000);
+    }
 }

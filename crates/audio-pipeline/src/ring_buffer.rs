@@ -53,7 +53,16 @@ impl AudioRingBuffer {
         let keep = (self.sample_rate as f32 * secs).round() as usize;
         while self.samples.len() > keep {
             self.samples.pop_front();
+            // Phải đếm như `push` tràn cửa sổ: mốc thời gian (`start_ms`,
+            // `slice_from_ms`) tính từ `dropped`, quên đếm là trục thời gian lệch
+            // đúng bằng đoạn vừa cắt.
+            self.dropped += 1;
         }
+    }
+
+    /// Mốc thời gian (ms) của sample NGAY SAU sample cuối trong buffer.
+    pub fn end_ms(&self) -> i64 {
+        self.start_ms() + (self.samples.len() as i64 * 1_000) / self.sample_rate as i64
     }
 
     pub fn clear(&mut self) {
@@ -123,6 +132,18 @@ mod tests {
         assert_eq!(buffer.slice_from_ms(0).len(), 16_000);
         // Mốc vượt quá dữ liệu -> rỗng.
         assert!(buffer.slice_from_ms(5_000).is_empty());
+    }
+
+    #[test]
+    fn retain_tail_advances_the_time_axis() {
+        let mut buffer = AudioRingBuffer::new(16_000, 4.0);
+        buffer.push(&vec![0.0; 32_000]); // 2 s
+        buffer.retain_tail(0.5);
+        assert_eq!(buffer.len(), 8_000);
+        assert_eq!(buffer.start_ms(), 1_500);
+        assert_eq!(buffer.end_ms(), 2_000);
+        // Cắt xong, slice từ mốc cũ phải trả đúng phần còn lại chứ không lệch.
+        assert_eq!(buffer.slice_from_ms(1_500).len(), 8_000);
     }
 
     #[test]
