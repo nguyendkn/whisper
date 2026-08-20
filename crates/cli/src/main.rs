@@ -9,7 +9,8 @@ use stream_engine::{
 };
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
-use whisper_core::{WhisperConfig, WhisperModel};
+use whisper_core::{AsrBackend, WhisperBackend, WhisperConfig, WhisperModel};
+use zipformer::{ZipformerBackend, ZipformerConfig};
 
 mod audio_source;
 mod bench;
@@ -20,9 +21,15 @@ mod wer;
 #[derive(Debug, Parser)]
 #[command(name = "whisper-rt", version)]
 struct Args {
-    /// Model GGML/GGUF của whisper.
+    /// Model GGML/GGUF của whisper, hoặc thư mục ONNX khi --engine zipformer.
     #[arg(long, default_value = "models/ggml-large-v3-turbo.bin")]
     model: PathBuf,
+    /// Engine ASR: whisper | zipformer (RNN-T qua sherpa-onnx).
+    #[arg(long, default_value = "whisper")]
+    engine: String,
+    /// Zipformer: dùng bản .int8.onnx.
+    #[arg(long)]
+    quantized: bool,
     /// Model Silero VAD của whisper.cpp. Không có thì dùng energy VAD.
     #[arg(long)]
     vad_model: Option<PathBuf>,
@@ -30,6 +37,9 @@ struct Args {
     /// Đây là cách dùng large-v3-turbo mà partial vẫn dưới 300 ms.
     #[arg(long)]
     partial_model: Option<PathBuf>,
+    /// Engine cho model partial: whisper | zipformer.
+    #[arg(long, default_value = "whisper")]
+    partial_engine: String,
     /// Số thread cho model partial. Mặc định 4 — model partial không nên chiếm hết
     /// hạn mức thread của model chính.
     #[arg(long, default_value_t = 4)]
@@ -114,48 +124,68 @@ async fn main() -> anyhow::Result<()> {
     whisper_core::install_logging_hooks();
 
     let args = Args::parse();
-    let model = Arc::new(WhisperModel::load(WhisperConfig {
-        model_path: args.model.clone(),
-        language: (!args.language.trim().is_empty()).then(|| args.language.clone()),
-        n_threads: args.threads,
-        use_gpu: args.use_gpu,
-        flash_attn: args.flash_attn,
-        state_pool_size: args.concurrency,
-        scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
-        min_confidence: args.min_confidence,
-        beam_size: (args.beam_size > 1).then_some(args.beam_size),
-        temperature_inc: args.temperature_inc,
-        token_timestamps: !args.no_local_agreement,
-        ..WhisperConfig::default()
-    })?);
+    let backend: Arc<dyn AsrBackend> = match args.engine.as_str() {
+        "whisper" => {
+            let model = Arc::new(WhisperModel::load(WhisperConfig {
+                model_path: args.model.clone(),
+                language: (!args.language.trim().is_empty()).then(|| args.language.clone()),
+                n_threads: args.threads,
+                use_gpu: args.use_gpu,
+                flash_attn: args.flash_attn,
+                state_pool_size: args.concurrency,
+                scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
+                min_confidence: args.min_confidence,
+                beam_size: (args.beam_size > 1).then_some(args.beam_size),
+                temperature_inc: args.temperature_inc,
+                token_timestamps: !args.no_local_agreement,
+                ..WhisperConfig::default()
+            })?);
+            Arc::new(WhisperBackend::new(model, args.concurrency))
+        }
+        "zipformer" => Arc::new(ZipformerBackend::load(ZipformerConfig {
+            dir: args.model.clone(),
+            quantized: args.quantized,
+            n_threads: args.threads,
+        })?),
+        other => anyhow::bail!("engine lạ: {other:?} (whisper | zipformer)"),
+    };
     let budget = if args.cpu_budget > 0 {
         ThreadBudget::new(args.cpu_budget)
     } else {
         ThreadBudget::auto()
     };
     let scheduler = Arc::new(InferenceScheduler::with_budget(
-        model,
+        backend,
         Arc::clone(&budget),
-        args.concurrency,
     ));
 
     let partial_scheduler = match args.partial_model.as_ref() {
         Some(path) => {
-            let partial = Arc::new(WhisperModel::load(WhisperConfig {
-                model_path: path.clone(),
-                language: (!args.language.trim().is_empty()).then(|| args.language.clone()),
-                n_threads: args.partial_threads,
-                use_gpu: args.use_gpu,
-                state_pool_size: 1,
-                scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
-                min_confidence: args.min_confidence,
-                token_timestamps: !args.no_local_agreement,
-                ..WhisperConfig::default()
-            })?);
+            let partial: Arc<dyn AsrBackend> = match args.partial_engine.as_str() {
+                "whisper" => Arc::new(WhisperBackend::new(
+                    Arc::new(WhisperModel::load(WhisperConfig {
+                        model_path: path.clone(),
+                        language: (!args.language.trim().is_empty()).then(|| args.language.clone()),
+                        n_threads: args.partial_threads,
+                        use_gpu: args.use_gpu,
+                        state_pool_size: 1,
+                        scale_partial_audio_ctx: !args.no_audio_ctx_scaling,
+                        min_confidence: args.min_confidence,
+                        token_timestamps: !args.no_local_agreement,
+                        ..WhisperConfig::default()
+                    })?),
+                    1,
+                )),
+                "zipformer" => Arc::new(ZipformerBackend::load(ZipformerConfig {
+                    dir: path.clone(),
+                    quantized: args.quantized,
+                    n_threads: args.partial_threads,
+                })?),
+                other => anyhow::bail!("partial-engine lạ: {other:?}"),
+            };
             Some(Arc::new(InferenceScheduler::with_budget(
                 partial,
                 Arc::clone(&budget),
-                1,
             )))
         }
         None => None,

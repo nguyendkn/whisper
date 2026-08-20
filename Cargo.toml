@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/audio-pipeline",
     "crates/stream-engine",
+    "crates/zipformer",
     "crates/server",
     "crates/cli",
 ]
@@ -28,6 +29,7 @@ whisper-rs = { version = "0.16", default-features = false, features = ["tracing_
 # workspace-internal
 whisper-core = { path = "crates/core", package = "core" }
 audio-pipeline = { path = "crates/audio-pipeline" }
+zipformer = { path = "crates/zipformer" }
 stream-engine = { path = "crates/stream-engine" }
 
 [profile.release]

@@ -14,6 +14,9 @@ pub enum AsrError {
     StateCreate(#[source] whisper_rs::WhisperError),
     #[error("inference failed: {0}")]
     Inference(#[source] whisper_rs::WhisperError),
+    /// Lỗi từ backend không phải whisper (zipformer/sherpa-onnx...).
+    #[error("backend error: {0}")]
+    Backend(String),
     /// whisper.cpp trả rỗng hoặc lỗi với audio quá ngắn — chặn từ sớm để
     /// không tốn một lượt encode 30 s cho vài chục ms audio.
     #[error("audio too short: {got_ms} ms < {min_ms} ms")]

@@ -35,6 +35,13 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelSettings {
+    /// "whisper" (mặc định) hoặc "zipformer" (RNN-T qua sherpa-onnx; `path` là
+    /// thư mục chứa encoder/decoder/joiner .onnx + tokens.txt).
+    #[serde(default)]
+    pub engine: String,
+    /// Zipformer: dùng bản .int8.onnx.
+    #[serde(default)]
+    pub quantized: bool,
     pub path: PathBuf,
     /// Rỗng = auto-detect ngôn ngữ.
     #[serde(default)]
@@ -148,22 +155,7 @@ impl ServerConfig {
         }
     }
 
-    /// Config cho từng model theo ngôn ngữ: trả về (mã ngôn ngữ, config).
-    pub fn language_whisper_configs(&self) -> Vec<(Vec<String>, WhisperConfig)> {
-        self.language_models
-            .iter()
-            .map(|entry| {
-                let mut config = self.model_settings_to_config(&entry.model);
-                // Model đã gắn với một ngôn ngữ cụ thể thì ép luôn ngôn ngữ đó, khỏi
-                // phải auto-detect.
-                config.language =
-                    opt(&entry.model.language).or_else(|| entry.languages.first().cloned());
-                (entry.languages.clone(), config)
-            })
-            .collect()
-    }
-
-    fn model_settings_to_config(&self, model: &ModelSettings) -> WhisperConfig {
+    pub(crate) fn model_settings_to_config(&self, model: &ModelSettings) -> WhisperConfig {
         WhisperConfig {
             model_path: model.path.clone(),
             language: opt(&model.language),

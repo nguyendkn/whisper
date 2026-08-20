@@ -1,0 +1,16 @@
+[package]
+name = "zipformer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Backend Zipformer RNN-T (sherpa-onnx) cho whisper-rt."
+
+[dependencies]
+whisper-core = { workspace = true }
+# `sys` để đọc kết quả đầy đủ (json có tokens + timestamps) thay vì chỉ text.
+sherpa-rs = { version = "0.6", features = ["sys"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

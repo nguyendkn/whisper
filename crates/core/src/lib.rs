@@ -2,12 +2,14 @@
 //! WebSocket hay session — nhờ vậy đổi backend (whisper.cpp → Voxtral,
 //! Parakeet) chỉ đụng crate này.
 
+pub mod backend;
 pub mod config;
 pub mod error;
 pub mod inference;
 pub mod model;
 pub mod state_pool;
 
+pub use backend::{AsrBackend, WhisperBackend};
 pub use config::{WhisperConfig, WHISPER_CHUNK_SECS, WHISPER_FULL_AUDIO_CTX, WHISPER_SAMPLE_RATE};
 pub use error::AsrError;
 pub use inference::{transcribe, DecodeMode, Segment, TranscriptResult, Word};

@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use audio_pipeline::{EnergyVad, GatedProbe, SpeechProbe};
 use stream_engine::{InferenceScheduler, SessionEngines, ThreadBudget};
-use whisper_core::WhisperModel;
+use whisper_core::{AsrBackend, WhisperBackend, WhisperConfig, WhisperModel};
+use zipformer::{ZipformerBackend, ZipformerConfig};
 
-use crate::config::ServerConfig;
+use crate::config::{ModelSettings, ServerConfig};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -28,37 +29,37 @@ impl AppState {
             ThreadBudget::auto()
         };
 
-        let model = Arc::new(WhisperModel::load(cfg.whisper_config())?);
         let scheduler = Arc::new(InferenceScheduler::with_budget(
-            model,
+            build_backend(
+                &cfg.model,
+                cfg.whisper_config(),
+                cfg.max_concurrent_inference,
+            )?,
             Arc::clone(&budget),
-            cfg.max_concurrent_inference,
         ));
         // Model partial (tuỳ chọn): model nhỏ giữ độ trễ partial thấp trong khi
         // model chính vẫn là model lớn cho lượt chốt câu.
-        let partial_scheduler = match cfg.partial_whisper_config() {
-            Some(partial_cfg) => {
-                let partial_model = Arc::new(WhisperModel::load(partial_cfg)?);
-                Some(Arc::new(InferenceScheduler::with_budget(
-                    partial_model,
-                    Arc::clone(&budget),
-                    cfg.max_concurrent_partial_inference,
-                )))
-            }
-            None => None,
+        let partial_scheduler = match (cfg.partial_model.as_ref(), cfg.partial_whisper_config()) {
+            (Some(settings), Some(partial_cfg)) => Some(Arc::new(InferenceScheduler::with_budget(
+                build_backend(settings, partial_cfg, cfg.max_concurrent_partial_inference)?,
+                Arc::clone(&budget),
+            ))),
+            _ => None,
         };
 
         // Model theo ngôn ngữ: không model nào thắng ở mọi thứ tiếng, nên cho phép
         // khai báo riêng và định tuyến theo `?language=` của session.
         let mut language_schedulers: HashMap<String, Arc<InferenceScheduler>> = HashMap::new();
-        for (languages, whisper_cfg) in cfg.language_whisper_configs() {
-            let model = Arc::new(WhisperModel::load(whisper_cfg)?);
+        for entry in &cfg.language_models {
+            let mut whisper_cfg = cfg.model_settings_to_config(&entry.model);
+            whisper_cfg.language = whisper_cfg
+                .language
+                .or_else(|| entry.languages.first().cloned());
             let scheduler = Arc::new(InferenceScheduler::with_budget(
-                model,
+                build_backend(&entry.model, whisper_cfg, cfg.max_concurrent_inference)?,
                 Arc::clone(&budget),
-                cfg.max_concurrent_inference,
             ));
-            for language in languages {
+            for language in &entry.languages {
                 language_schedulers.insert(language.to_lowercase(), Arc::clone(&scheduler));
             }
         }
@@ -149,5 +150,25 @@ impl AppState {
     #[cfg(not(feature = "vad-silero"))]
     fn silero_probe(&self) -> Option<Box<dyn SpeechProbe>> {
         None
+    }
+}
+
+/// Dựng backend ASR theo `engine` khai báo trong config.
+fn build_backend(
+    settings: &ModelSettings,
+    whisper_cfg: WhisperConfig,
+    pool_size: usize,
+) -> anyhow::Result<Arc<dyn AsrBackend>> {
+    match settings.engine.as_str() {
+        "" | "whisper" => Ok(Arc::new(WhisperBackend::new(
+            Arc::new(WhisperModel::load(whisper_cfg)?),
+            pool_size,
+        ))),
+        "zipformer" => Ok(Arc::new(ZipformerBackend::load(ZipformerConfig {
+            dir: settings.path.clone(),
+            quantized: settings.quantized,
+            n_threads: settings.n_threads,
+        })?)),
+        other => anyhow::bail!("engine lạ trong config: {other:?} (whisper | zipformer)"),
     }
 }

@@ -1,43 +1,43 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use whisper_core::{transcribe, DecodeMode, StatePool, TranscriptResult, WhisperModel};
+use whisper_core::{AsrBackend, DecodeMode, TranscriptResult, WhisperBackend, WhisperModel};
 
 use crate::{budget::ThreadBudget, error::EngineError};
 
-/// Xếp hàng inference cho **một** model, dưới hạn mức thread dùng chung
-/// ([`ThreadBudget`]) và với pool `WhisperState` để không cấp phát lại KV cache.
+/// Xếp hàng inference cho **một** backend ASR (whisper.cpp, zipformer...), dưới
+/// hạn mức thread dùng chung ([`ThreadBudget`]).
 ///
 /// Nhiều scheduler (partial + final) phải dùng cùng một `ThreadBudget`, nếu không
 /// chúng sẽ cộng dồn thread và làm sập hiệu năng.
-#[derive(Debug)]
 pub struct InferenceScheduler {
-    pool: Arc<StatePool>,
+    backend: Arc<dyn AsrBackend>,
     budget: Arc<ThreadBudget>,
     threads: usize,
 }
 
 impl InferenceScheduler {
-    /// Scheduler đứng một mình: tự tạo hạn mức `max_concurrent * n_threads`.
+    /// Scheduler đứng một mình cho whisper: tự tạo hạn mức
+    /// `max_concurrent * n_threads`. Giữ nguyên chữ ký cũ cho cli/test.
     pub fn new(model: Arc<WhisperModel>, max_concurrent: usize) -> Self {
         let max_concurrent = max_concurrent.max(1);
         let threads = model.config().n_threads.max(1) as usize;
         let budget = ThreadBudget::new(max_concurrent * threads);
-        Self::with_budget(model, budget, max_concurrent)
+        Self::with_budget(Arc::new(WhisperBackend::new(model, max_concurrent)), budget)
     }
 
-    /// Scheduler dùng chung hạn mức với các model khác trong tiến trình.
-    pub fn with_budget(
-        model: Arc<WhisperModel>,
-        budget: Arc<ThreadBudget>,
-        state_pool_size: usize,
-    ) -> Self {
-        let threads = model.config().n_threads.max(1) as usize;
+    /// Scheduler dùng chung hạn mức với các backend khác trong tiến trình.
+    pub fn with_budget(backend: Arc<dyn AsrBackend>, budget: Arc<ThreadBudget>) -> Self {
+        let threads = backend.n_threads().max(1);
         Self {
-            pool: Arc::new(StatePool::new(model, state_pool_size.max(1))),
+            backend,
             budget,
             threads,
         }
+    }
+
+    pub fn backend_name(&self) -> &'static str {
+        self.backend.name()
     }
 
     /// Số lượt inference của model này chạy song song được trong hạn mức.
@@ -52,10 +52,6 @@ impl InferenceScheduler {
 
     pub fn budget(&self) -> &Arc<ThreadBudget> {
         &self.budget
-    }
-
-    pub fn model(&self) -> &Arc<WhisperModel> {
-        self.pool.model()
     }
 
     /// Xếp hàng một cửa sổ PCM 16 kHz mono và chờ kết quả.
@@ -81,18 +77,9 @@ impl InferenceScheduler {
             );
         }
 
-        let pool = Arc::clone(&self.pool);
+        let backend = Arc::clone(&self.backend);
         let result = tokio::task::spawn_blocking(move || {
-            let mut state = pool.acquire()?;
-            let model = Arc::clone(pool.model());
-            transcribe(
-                &model,
-                state.get_mut(),
-                &pcm,
-                mode,
-                prompt.as_deref(),
-                language.as_deref(),
-            )
+            backend.transcribe(&pcm, mode, prompt.as_deref(), language.as_deref())
         })
         .await
         .map_err(|e| EngineError::Join(e.to_string()))?;

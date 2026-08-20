@@ -231,6 +231,39 @@ dữ liệu train (kiểu lời chào kênh YouTube). Đo trên mẫu 128 s bằ
   lặp lại cùng một câu, trong khi hai lượt nói thật liền nhau giống hệt nhau gần như
   không xảy ra. Trên mẫu trên, cách này bỏ được lần lặp thứ hai mà không cần ngưỡng.
 
+## Backend thứ hai: Zipformer RNN-T (sherpa-onnx)
+
+Ngoài whisper.cpp, engine chạy được model Zipformer transducer (k2/icefall) xuất ONNX qua
+sherpa-onnx — cắm vào cùng trait `whisper_core::AsrBackend`, nên session, LocalAgreement,
+ThreadBudget, eval harness dùng lại nguyên vẹn. Model đã tích hợp:
+[`hynt/Zipformer-30M-RNNT-6000h`](https://huggingface.co/hynt/Zipformer-30M-RNNT-6000h)
+(tiếng Việt, 6 000 h, thắng VLSP 2025 — license **CC-BY-NC-ND-4.0, chỉ dùng phi thương mại**).
+
+```bash
+# models/zipformer-vi-30m/: encoder/decoder/joiner .onnx (+ bản .int8) + tokens.txt
+# (với model của hynt: đổi tên config.json thành tokens.txt)
+cargo run --release -p cli -- --engine zipformer --model models/zipformer-vi-30m \
+    --quantized --file mau.mp3 --vad-model models/ggml-silero-v5.1.2.bin
+```
+
+Số đo trên cùng máy (4 thread, int8; whisper turbo cần 12 thread):
+
+| | zipformer-30M | large-v3-turbo | chênh |
+|---|---|---|---|
+| partial 6 s | **85 ms** (RTF 0,014) | 1 985 ms (RTF 0,33) | 23× |
+| final 20 s | **228 ms** (RTF 0,011) | 10 159 ms (RTF 0,51) | 45× |
+| stream @ RTF=1 | **~131** | ~2 | 65× |
+| FLEURS vi (100 clip) | 8,0% ⚠️ | 9,6% | — |
+
+⚠️ Số FLEURS của zipformer **bị nhiễm**: FLEURS nằm trong training data của model, nên chỉ
+mang tính tham khảo. Bằng chứng sạch hơn: đoạn TTS báo dantri 7,4 s transcribe khớp 100%
+từng chữ, và các benchmark VLSP trên trang model. Giới hạn: chỉ tiếng Việt, không ITN (số ra
+dạng chữ: "chín nghìn sáu trăm"), không chấm câu/hoa thường, `prompt`/`language` bị bỏ qua.
+
+Deploy production định tuyến theo ngôn ngữ: `?language=vi` → zipformer (partial lẫn final gần
+tức thì), còn lại → turbo. sherpa-onnx link động — ba file `.so` (từ `target/release/`) phải
+nằm cạnh binary và `LD_LIBRARY_PATH` trỏ vào đó (manifest k3s đã set).
+
 ## Nghiên cứu tham chiếu và thực nghiệm độ chính xác
 
 ### Nguồn

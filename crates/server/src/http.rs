@@ -26,6 +26,7 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
         "status": "ok",
         "whisper_cpp": whisper_core::whisper_cpp_version(),
         "model": state.cfg.model.path,
+        "engine": state.scheduler.backend_name(),
         "cpu_thread_budget": state.scheduler.budget().total(),
         "threads_available": state.scheduler.available_permits(),
         "max_concurrent_inference": state.scheduler.max_concurrent(),

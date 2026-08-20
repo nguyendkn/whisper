@@ -54,6 +54,18 @@ data:
     max_probe_backlog_secs = 2.0
     local_agreement = true
     condition_on_previous = false
+
+    # Tiếng Việt đi qua Zipformer-30M RNN-T (hynt/Zipformer-30M-RNNT-6000h,
+    # CC-BY-NC-ND-4.0 — CHỈ dùng phi thương mại). Đo trên máy này, 4 thread:
+    # partial 85 ms / final 20 s hết 228 ms — nhanh hơn turbo 23-45 lần, chất
+    # lượng tiếng Việt nhỉnh hơn. Không ITN (số ra dạng chữ), không chấm câu.
+    [[language_models]]
+    languages = ["vi"]
+    engine = "zipformer"
+    quantized = true
+    path = "/models/zipformer-vi-30m"
+    n_threads = 4
+    min_audio_ms = 200
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -92,6 +104,9 @@ spec:
           env:
             - name: WHISPER_RT_CONFIG
               value: /etc/whisper-rt/default
+            # sherpa-onnx (backend zipformer) link động — .so nằm cạnh binary.
+            - name: LD_LIBRARY_PATH
+              value: /opt/whisper-rt/bin
             - name: RUST_LOG
               value: info,whisper_rs=warn
           ports:
